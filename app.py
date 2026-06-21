@@ -615,9 +615,22 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
     else:
         return False, None, overlap_warning, "Constraints are too tight. The algorithm cannot find a mathematically legal schedule. Try using Emergency Debug Mode."
 
+# ==========================================
+# 2. HELPER FUNCTIONS
+# ==========================================
+def get_dates_for_weekdays(year, month, weekdays):
+    day_map = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 'Friday': 4, 'Saturday': 5, 'Sunday': 6}
+    target_days = [day_map[w] for w in weekdays]
+    num_days = calendar.monthrange(year, month)[1]
+    dates = []
+    for d in range(1, num_days + 1):
+        dt = datetime.date(year, month, d)
+        if dt.weekday() in target_days:
+            dates.append(dt)
+    return dates
 
 # ==========================================
-# 2. THE GRAPHICAL USER INTERFACE (GUI)
+# 3. THE GRAPHICAL USER INTERFACE (GUI)
 # ==========================================
 st.set_page_config(page_title="Cardiology Scheduler", page_icon="🩺", layout="wide")
 st.title("🩺 Cardiology Shift Scheduler")
@@ -636,6 +649,9 @@ if "df" not in st.session_state:
         "Leave Weeks (Type the Monday)": [""] * len(default_doctors)
     })
 
+if "clinics_list" not in st.session_state:
+    st.session_state.clinics_list = pd.DataFrame({"Clinic Name": ['PACEMAKER', 'DIMESSI', 'SCOMPENSO']})
+
 COLOR_PALETTE = {
     "White": "#FFFFFF", "Light Blue": "#CCEBFF", "Light Green": "#CCFFCC", 
     "Light Red": "#FFCCCC", "Light Yellow": "#FFFFCC", "Peach": "#FFE5CC", 
@@ -649,16 +665,27 @@ with st.sidebar:
     selected_month = st.number_input("Month", min_value=1, max_value=12, value=datetime.date.today().month)
     
     st.header("2. Base Settings")
-    or_days_input = st.multiselect("Operating Room (OR) Days", 
-                                   [datetime.date(selected_year, selected_month, d) for d in range(1, calendar.monthrange(selected_year, selected_month)[1] + 1)])
+    st.markdown("##### Operating Room (OR)")
+    or_weekdays = st.multiselect("Standard OR Weekdays", 
+                                 ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], 
+                                 default=["Monday", "Friday"])
+    
+    auto_or_dates = get_dates_for_weekdays(selected_year, selected_month, or_weekdays)
+    all_dates_in_month = [datetime.date(selected_year, selected_month, d) for d in range(1, calendar.monthrange(selected_year, selected_month)[1] + 1)]
+    
+    or_days_input = st.multiselect("Final OR Dates (Add/Remove specific days)", 
+                                   all_dates_in_month, 
+                                   default=auto_or_dates,
+                                   key=f"or_dates_{selected_year}_{selected_month}")
     or_days_formatted = [d.strftime("%Y-%m-%d") for d in or_days_input]
     
     st.markdown("---")
     st.header("🛠️ Troubleshooter")
     debug_toggle = st.checkbox("🚨 Enable Emergency Debug Mode", help="Ignores all equity rules to force a schedule.")
 
-# Calculate global roster dates for dynamic UI elements
 ui_roster_dates = get_roster_dates(selected_year, selected_month)
+current_clinics = [str(c).strip().upper().replace(" ", "_") for c in st.session_state.clinics_list["Clinic Name"].dropna().unique() if str(c).strip()]
+dynamic_shift_options = ['WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT'] + [f'OUT_{c}_AM' for c in current_clinics]
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Master Spreadsheet", "🔒 Forced Shifts (Grid)", "🏥 Outpatient Clinics", "🎨 Doctor Colors", "🚀 Generate Schedule"])
 
@@ -686,18 +713,13 @@ with tab2:
     st.markdown("Click on any empty cell to forcefully lock a specific doctor into that shift. The algorithm will build the rest of the schedule around your choices.")
     st.warning("⚠️ **Warning:** If you force a shift that breaks a hard rule (e.g. 12-hour rest, or overlapping with Ferie), the algorithm will fail.")
     
-    static_shifts = ['WARD_AM', 'URG_AM', 'OR_AM', 'OUT_PACEMAKER_AM', 'OUT_DIMESSI_AM', 'OUT_SCOMPENSO_AM', 'WARD_PM', 'URG_PM', 'REP_DAY', 'REP_NIGHT', 'NIGHT']
-    
-    # Check if the year/month changed so we can wipe the manual grid memory
     grid_memory_key = f"manual_grid_memory_{selected_year}_{selected_month}"
     if st.session_state.get("current_ym") != f"{selected_year}-{selected_month}":
         st.session_state["current_ym"] = f"{selected_year}-{selected_month}"
-        # Wipe old grids
         for k in list(st.session_state.keys()):
             if k.startswith("grid_week_"):
                 del st.session_state[k]
 
-    # Generate the weekly visual tables
     for w_idx, week_start_idx in enumerate(range(0, len(ui_roster_dates), 7)):
         st.markdown(f"#### Week {w_idx + 1}")
         week_dates = ui_roster_dates[week_start_idx : week_start_idx + 7]
@@ -705,14 +727,12 @@ with tab2:
         
         state_key = f"grid_week_{w_idx}"
         
-        # Initialize an empty grid for this week if it doesn't exist
         if state_key not in st.session_state:
-            init_dict = {"Shift": static_shifts}
+            init_dict = {"Shift": dynamic_shift_options}
             for c in col_names:
-                init_dict[c] = [""] * len(static_shifts)
+                init_dict[c] = [""] * len(dynamic_shift_options)
             st.session_state[state_key] = pd.DataFrame(init_dict)
             
-        # Configure the columns so dates display nicely but output the correct YYYY-MM-DD format
         col_config = {"Shift": st.column_config.TextColumn("Shift", disabled=True)}
         for d in week_dates:
             d_str = d.strftime("%Y-%m-%d")
@@ -732,17 +752,45 @@ with tab2:
         st.markdown("---")
 
 with tab3:
-    st.subheader("Outpatient Setup")
-    outpatient_setup = {}
-    clinics = ['PACEMAKER', 'DIMESSI', 'SCOMPENSO']
-    cols = st.columns(3)
+    st.subheader("Manage Outpatient Clinics")
+    st.markdown("Add new clinics, define their weekly schedules, and assign capable doctors.")
     
-    for i, clinic in enumerate(clinics):
-        with cols[i]:
-            st.markdown(f"#### {clinic}")
-            dates = st.multiselect("Dates", [datetime.date(selected_year, selected_month, d) for d in range(1, calendar.monthrange(selected_year, selected_month)[1] + 1)], key=f"out_date_{clinic}")
-            capable = st.multiselect("Capable Doctors", current_doctors, key=f"out_doc_{clinic}")
-            outpatient_setup[clinic] = {'days': [d.strftime("%Y-%m-%d") for d in dates], 'capable': capable}
+    st.markdown("##### 1. Define Clinics")
+    edited_clinics_df = st.data_editor(
+        st.session_state.clinics_list, 
+        num_rows="dynamic",
+        column_config={"Clinic Name": st.column_config.TextColumn("Clinic Name", required=True)},
+        use_container_width=True,
+        hide_index=True
+    )
+    st.session_state.clinics_list = edited_clinics_df
+    
+    active_clinics = [str(c).strip().upper().replace(" ", "_") for c in edited_clinics_df["Clinic Name"].dropna().unique() if str(c).strip()]
+    
+    st.markdown("---")
+    st.markdown("##### 2. Schedule Clinics & Assign Doctors")
+    
+    outpatient_setup = {}
+    
+    if active_clinics:
+        for clinic in active_clinics:
+            with st.expander(f"🏥 {clinic.replace('_', ' ')} Schedule", expanded=True):
+                col_d, col_doc = st.columns(2)
+                
+                with col_d:
+                    clinic_weekdays = st.multiselect("Standard Weekly Days", ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], key=f"wd_{clinic}")
+                    auto_clinic_dates = get_dates_for_weekdays(selected_year, selected_month, clinic_weekdays)
+                    final_clinic_dates = st.multiselect("Final Specific Dates", all_dates_in_month, default=auto_clinic_dates, key=f"dates_{clinic}_{selected_year}_{selected_month}")
+                
+                with col_doc:
+                    capable = st.multiselect("Capable Doctors", current_doctors, key=f"doc_{clinic}")
+                
+                outpatient_setup[clinic] = {
+                    'days': [d.strftime("%Y-%m-%d") for d in final_clinic_dates],
+                    'capable': capable
+                }
+    else:
+        st.info("No clinics defined. Add a clinic name above to schedule it.")
 
 with tab4:
     st.subheader("Doctor Color Assignments")
@@ -780,7 +828,6 @@ with tab5:
                 ward_preferred = edited_df[edited_df["Ward Preferred (Checkbox)"] == True]["Doctor"].dropna().str.strip().str.upper().tolist()
                 or_capable = edited_df[edited_df["OR Capable (Checkbox)"] == True]["Doctor"].dropna().str.strip().str.upper().tolist()
                 
-                # --- PARSE THE VISUAL WEEKLY GRIDS INTO FORCED SHIFTS ---
                 manual_shifts = []
                 for w_idx in range(0, len(ui_roster_dates) // 7):
                     state_key = f"grid_week_{w_idx}"
@@ -788,7 +835,6 @@ with tab5:
                         df_w = st.session_state[state_key]
                         for idx, row in df_w.iterrows():
                             shift_val = str(row["Shift"]).strip().upper()
-                            # Loop over the actual date columns
                             for d in ui_roster_dates[w_idx*7 : (w_idx*7)+7]:
                                 d_str = d.strftime("%Y-%m-%d")
                                 doc = row.get(d_str, "")
