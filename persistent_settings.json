@@ -2,108 +2,151 @@
     "clinics": [
         "PACEMAKER",
         "DIMESSI",
-        "SCOMPENSO"
+        "SCOMPENSO",
+        "PREOP_E_ONCO"
     ],
-    "doctors": [
+    "docs_base": [
         {
             "Doctor": "BURGAZZI",
-            "Private Practice (Afternoon)": "",
-            "Color": "Mint",
-            "Ward Preferred": true,
-            "OR Capable": false,
-            "PACEMAKER": false,
-            "DIMESSI": false,
-            "SCOMPENSO": false
+            "Private Practice (Afternoon)": "Thursday",
+            "Color": "Mint"
         },
         {
             "Doctor": "CACCAMO",
-            "Private Practice (Afternoon)": "",
-            "Color": "Light Blue",
-            "Ward Preferred": false,
-            "OR Capable": true,
-            "PACEMAKER": false,
-            "DIMESSI": false,
-            "SCOMPENSO": false
+            "Private Practice (Afternoon)": "Monday",
+            "Color": "Light Blue"
         },
         {
             "Doctor": "CARDINALI",
             "Private Practice (Afternoon)": "",
-            "Color": "Light Green",
-            "Ward Preferred": false,
-            "OR Capable": false,
-            "PACEMAKER": false,
-            "DIMESSI": false,
-            "SCOMPENSO": false
+            "Color": "Light Green"
         },
         {
             "Doctor": "CICCARELLI",
-            "Private Practice (Afternoon)": "",
-            "Color": "White",
-            "Ward Preferred": false,
-            "OR Capable": false,
-            "PACEMAKER": false,
-            "DIMESSI": false,
-            "SCOMPENSO": false
+            "Private Practice (Afternoon)": "Wednesday",
+            "Color": "Light Red"
         },
         {
             "Doctor": "CICCHIRILLO",
             "Private Practice (Afternoon)": "",
-            "Color": "White",
-            "Ward Preferred": false,
-            "OR Capable": false,
-            "PACEMAKER": false,
-            "DIMESSI": false,
-            "SCOMPENSO": false
+            "Color": "Light Yellow"
         },
         {
             "Doctor": "FLORI",
-            "Private Practice (Afternoon)": "",
-            "Color": "White",
-            "Ward Preferred": false,
-            "OR Capable": false,
-            "PACEMAKER": false,
-            "DIMESSI": false,
-            "SCOMPENSO": false
+            "Private Practice (Afternoon)": "Friday",
+            "Color": "Peach"
         },
         {
             "Doctor": "FINIZIO",
-            "Private Practice (Afternoon)": "",
-            "Color": "White",
-            "Ward Preferred": false,
-            "OR Capable": false,
-            "PACEMAKER": false,
-            "DIMESSI": false,
-            "SCOMPENSO": false
+            "Private Practice (Afternoon)": "Monday",
+            "Color": "Lavender"
         },
         {
             "Doctor": "NUCCI",
-            "Private Practice (Afternoon)": "",
-            "Color": "White",
-            "Ward Preferred": false,
-            "OR Capable": true,
-            "PACEMAKER": false,
-            "DIMESSI": false,
-            "SCOMPENSO": false
+            "Private Practice (Afternoon)": "Tuesday",
+            "Color": "Light Pink"
         },
         {
             "Doctor": "ROBERTI",
             "Private Practice (Afternoon)": "",
-            "Color": "White",
-            "Ward Preferred": true,
-            "OR Capable": false,
-            "PACEMAKER": false,
-            "DIMESSI": false,
-            "SCOMPENSO": false
+            "Color": "Light Grey"
         },
         {
             "Doctor": "GAUDENZI",
             "Private Practice (Afternoon)": "",
-            "Color": "White",
+            "Color": "Light Orange"
+        }
+    ],
+    "capabilities": [
+        {
+            "Doctor": "BURGAZZI",
+            "Ward Preferred": true,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": true,
+            "SCOMPENSO": true,
+            "PREOP_E_ONCO": false
+        },
+        {
+            "Doctor": "CACCAMO",
+            "Ward Preferred": false,
+            "OR Capable": true,
+            "PACEMAKER": true,
+            "DIMESSI": true,
+            "SCOMPENSO": true,
+            "PREOP_E_ONCO": false
+        },
+        {
+            "Doctor": "CARDINALI",
+            "Ward Preferred": true,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": true,
+            "SCOMPENSO": true,
+            "PREOP_E_ONCO": false
+        },
+        {
+            "Doctor": "CICCARELLI",
+            "Ward Preferred": true,
+            "OR Capable": false,
+            "PACEMAKER": true,
+            "DIMESSI": true,
+            "SCOMPENSO": true,
+            "PREOP_E_ONCO": false
+        },
+        {
+            "Doctor": "CICCHIRILLO",
+            "Ward Preferred": true,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": true,
+            "SCOMPENSO": true,
+            "PREOP_E_ONCO": false
+        },
+        {
+            "Doctor": "FLORI",
+            "Ward Preferred": false,
+            "OR Capable": false,
+            "PACEMAKER": true,
+            "DIMESSI": true,
+            "SCOMPENSO": true,
+            "PREOP_E_ONCO": false
+        },
+        {
+            "Doctor": "FINIZIO",
+            "Ward Preferred": true,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": true,
+            "SCOMPENSO": true,
+            "PREOP_E_ONCO": false
+        },
+        {
+            "Doctor": "NUCCI",
+            "Ward Preferred": false,
+            "OR Capable": true,
+            "PACEMAKER": true,
+            "DIMESSI": true,
+            "SCOMPENSO": true,
+            "PREOP_E_ONCO": false
+        },
+        {
+            "Doctor": "ROBERTI",
+            "Ward Preferred": true,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": true,
+            "SCOMPENSO": true,
+            "PREOP_E_ONCO": false
+        },
+        {
+            "Doctor": "GAUDENZI",
             "Ward Preferred": false,
             "OR Capable": false,
             "PACEMAKER": false,
             "DIMESSI": false,
-            "SCOMPENSO": false
+            "SCOMPENSO": false,
+            "PREOP_E_ONCO": false
         }
     ]
 }
