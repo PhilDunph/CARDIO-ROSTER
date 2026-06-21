@@ -899,6 +899,10 @@ with st.sidebar:
     st.session_state.last_edited_caps = edited_cap_df
     
     save_persistent_settings(current_clinics, edited_docs_df, edited_cap_df)
+    
+    st.markdown("---")
+    st.header("🛠️ Troubleshooter")
+    debug_toggle = st.checkbox("🚨 Enable Emergency Debug Mode", help="Ignores all equity rules to force a schedule.")
 
 ui_roster_dates = get_roster_dates(selected_year, selected_month)
 
