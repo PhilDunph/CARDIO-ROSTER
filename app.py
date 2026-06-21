@@ -33,7 +33,7 @@ def push_to_github(file_path, commit_message):
             st.toast(f"⚠️ Could not sync {file_path} to cloud: {e}")
 
 # ==========================================
-# 1. PERSISTENT SETTINGS DATABASE
+# 1. PERSISTENT DATABASES
 # ==========================================
 SETTINGS_FILE = "persistent_settings.json"
 COUNTER_FILE = "historical_counters.json"
@@ -53,10 +53,8 @@ def load_persistent_settings():
         try:
             with open(SETTINGS_FILE, 'r') as f:
                 data = json.load(f)
-                
             if "docs_base" in data and "capabilities" in data:
                 return data
-                
             elif "doctors" in data:
                 docs_base = []
                 caps = []
@@ -66,13 +64,8 @@ def load_persistent_settings():
                         "Private Practice (Afternoon)": doc.get("Private Practice (Afternoon)", ""),
                         "Color": doc.get("Color", "White")
                     })
-                    cap_row = {
-                        "Doctor": doc.get("Doctor", ""),
-                        "Ward Preferred": doc.get("Ward Preferred", False),
-                        "OR Capable": doc.get("OR Capable", False)
-                    }
-                    for c in data.get("clinics", default_clinics):
-                        cap_row[c] = doc.get(c, False)
+                    cap_row = {"Doctor": doc.get("Doctor", ""), "Ward Preferred": doc.get("Ward Preferred", False), "OR Capable": doc.get("OR Capable", False)}
+                    for c in data.get("clinics", default_clinics): cap_row[c] = doc.get(c, False)
                     caps.append(cap_row)
                 return {"clinics": data.get("clinics", default_clinics), "docs_base": docs_base, "capabilities": caps}
         except Exception:
@@ -82,39 +75,54 @@ def load_persistent_settings():
     caps = [{"Doctor": d, "Ward Preferred": d in ["BURGAZZI", "ROBERTI"], "OR Capable": d in ["CACCAMO", "NUCCI"]} for d in default_doctors]
     for c in caps:
         for clin in default_clinics: c[clin] = False
-        
     return {"clinics": default_clinics, "docs_base": docs_base, "capabilities": caps}
 
 def save_persistent_settings(clinics_list, docs_df, cap_df):
-    data = {
-        "clinics": clinics_list,
-        "docs_base": docs_df.fillna("").to_dict('records'),
-        "capabilities": cap_df.fillna(False).to_dict('records')
-    }
-    with open(SETTINGS_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
+    data = {"clinics": clinics_list, "docs_base": docs_df.fillna("").to_dict('records'), "capabilities": cap_df.fillna(False).to_dict('records')}
+    with open(SETTINGS_FILE, 'w') as f: json.dump(data, f, indent=4)
 
+def load_historical_counters():
+    """Loads and upgrades the old flat counter dict to a Monthly Ledger system."""
+    if not os.path.exists(COUNTER_FILE):
+        return {"legacy_baseline": {}}
+    try:
+        with open(COUNTER_FILE, 'r') as f:
+            data = json.load(f)
+        if "legacy_baseline" in data:
+            return data
+        else:
+            new_data = {"legacy_baseline": {}}
+            for doc, stats in data.items():
+                new_data["legacy_baseline"][doc] = stats
+            return new_data
+    except:
+        return {"legacy_baseline": {}}
+
+def get_lifetime_stats(ledger, doc):
+    stats = {'nights': 0.0, 'doubles': 0.0, 'saturdays': 0.0, 'sundays': 0.0, 'holidays': 0.0, 'super_holidays': 0.0, 'golden_weekends': 0.0, 'reps': 0.0}
+    for month_key, month_data in ledger.items():
+        if doc in month_data:
+            for k in stats.keys():
+                val = month_data[doc].get(k, 0.0)
+                stats[k] += float(val) if not isinstance(val, dict) else 0.0
+    return stats
 
 # ==========================================
-# 2. THE MATH ENGINE (Core Logic)
+# 2. CALENDAR & UTILS
 # ==========================================
 def get_roster_dates(year, month):
     cal = calendar.Calendar(firstweekday=0) 
     mondays = []
     for week in cal.monthdatescalendar(year, month):
         if week[0].month == month:
-            if week[0] not in mondays:
-                mondays.append(week[0])
-                
+            if week[0] not in mondays: mondays.append(week[0])
     start_date = mondays[0]
     end_date = mondays[-1] + datetime.timedelta(days=6)
-    
     roster_dates = []
     curr = start_date
     while curr <= end_date:
         roster_dates.append(curr)
         curr += datetime.timedelta(days=1)
-        
     return roster_dates
 
 def get_dates_for_weekdays(year, month, weekdays):
@@ -124,172 +132,111 @@ def get_dates_for_weekdays(year, month, weekdays):
     dates = []
     for d in range(1, num_days + 1):
         dt = datetime.date(year, month, d)
-        if dt.weekday() in target_days:
-            dates.append(dt)
+        if dt.weekday() in target_days: dates.append(dt)
     return dates
 
 def get_master_name(s):
-    master_display = {
-        'WARD_AM': 'REPARTO',
-        'URG_AM': 'URGENZE',
-        'OR_AM': 'SALA',
-        'WARD_PM': 'REPARTO',
-        'URG_PM': 'URGENZE',
-        'NIGHT': 'NOTTE',
-        'REP_NIGHT': 'REPERIBILE NOTTE',
-        'REP_DAY': 'REPERIBILE GIORNO MATTINA E POMERIGGIO'
-    }
+    master_display = {'WARD_AM': 'REPARTO', 'URG_AM': 'URGENZE', 'OR_AM': 'SALA', 'WARD_PM': 'REPARTO', 'URG_PM': 'URGENZE', 'NIGHT': 'NOTTE', 'REP_NIGHT': 'REPERIBILE NOTTE', 'REP_DAY': 'REPERIBILE GIORNO MATTINA E POMERIGGIO'}
     if s in master_display: return master_display[s]
     if s.startswith('OUT_'): return s.replace('OUT_', 'AMBULATORIO ').replace('_AM', '').replace('_', ' ')
     return s
 
 def get_indiv_name(s):
-    indiv_display = {
-        'WARD_AM': 'REPARTO MATTINA',
-        'URG_AM': 'URGENZE MATTINA',
-        'OR_AM': 'SALA',
-        'WARD_PM': 'REPARTO POMERIGGIO',
-        'URG_PM': 'URGENZE POMERIGGIO',
-        'NIGHT': 'NOTTE',
-        'REP_NIGHT': 'REPERIBILE NOTTE',
-        'REP_DAY': 'REPERIBILE GIORNO (MATTINA E POMERIGGIO)'
-    }
+    indiv_display = {'WARD_AM': 'REPARTO MATTINA', 'URG_AM': 'URGENZE MATTINA', 'OR_AM': 'SALA', 'WARD_PM': 'REPARTO POMERIGGIO', 'URG_PM': 'URGENZE POMERIGGIO', 'NIGHT': 'NOTTE', 'REP_NIGHT': 'REPERIBILE NOTTE', 'REP_DAY': 'REPERIBILE GIORNO (MATTINA E POMERIGGIO)'}
     if s in indiv_display: return indiv_display[s]
     if s.startswith('OUT_'): return s.replace('OUT_', 'AMB. ').replace('_AM', '').replace('_', ' ')
     return s
 
-def generate_cardiology_schedule(year, month, conditional_or_days, manual_festivities, manual_assignments,
-                                 doctor_capabilities, outpatient_configs,
-                                 ferie, leave_weeks, desiderate, private_practice_afternoons, doctor_colors, doctors_list, 
-                                 commit_to_history=False, debug_mode=False):
+# ==========================================
+# 3. DRAFT GENERATOR (Math Engine Only)
+# ==========================================
+def generate_draft_schedule(year, month, conditional_or_days, manual_festivities, manual_assignments,
+                            doctor_capabilities, outpatient_configs, ferie, leave_weeks, desiderate, 
+                            private_practice_afternoons, doctors_list, debug_mode=False):
     
     doctors = doctors_list
     roster_dates = get_roster_dates(year, month)
     num_days = len(roster_dates)
     date_to_idx = {d.strftime("%Y-%m-%d"): idx for idx, d in enumerate(roster_dates)}
     it_holidays = holidays.IT(years=[year-1, year, year+1])
+    ledger = load_historical_counters()
     
-    if os.path.exists(COUNTER_FILE):
-        with open(COUNTER_FILE, 'r') as f:
-            lifetime = json.load(f)
-    else:
-        lifetime = {}
-        
-    for doc in doctors:
-        if doc not in lifetime:
-            lifetime[doc] = {'nights': 0.0, 'doubles': 0.0, 'saturdays': 0.0, 'sundays': 0.0, 'holidays': 0.0, 'super_holidays': 0.0, 'golden_weekends': 0.0, 'reps': 0.0}
-        elif isinstance(lifetime[doc], int): 
-            lifetime[doc] = {'nights': 0.0, 'doubles': 0.0, 'saturdays': 0.0, 'sundays': 0.0, 'holidays': float(lifetime[doc]), 'super_holidays': 0.0, 'golden_weekends': 0.0, 'reps': 0.0}
-        else:
-            for key in ['nights', 'doubles', 'saturdays', 'sundays', 'holidays', 'super_holidays', 'golden_weekends', 'reps']:
-                if key not in lifetime[doc]: 
-                    lifetime[doc][key] = 0.0
-                else:
-                    lifetime[doc][key] = float(lifetime[doc][key])
-
+    lifetime = {d: get_lifetime_stats(ledger, d) for d in doctors}
+    
     sunday_equivalent_days = []
     for day_idx, current_date in enumerate(roster_dates):
         is_sunday = current_date.weekday() == 6
         is_holiday = current_date in it_holidays or current_date.strftime("%Y-%m-%d") in manual_festivities
-        if is_sunday or is_holiday:
-            sunday_equivalent_days.append(day_idx)
+        if is_sunday or is_holiday: sunday_equivalent_days.append(day_idx)
             
-    # Process Manual Assignments for Lookup
     manual_keys = set()
     for (d, date_str, s) in manual_assignments:
-        if date_str in date_to_idx and d in doctors:
-            manual_keys.add((d, date_to_idx[date_str], s))
-            
-    all_leave_dates = []
-    for d, dates in ferie.items(): all_leave_dates.extend([(d, date_str) for date_str in dates])
-    for d, dates in desiderate.items(): all_leave_dates.extend([(d, date_str) for date_str in dates])
-    for d, start_mon_str in leave_weeks:
-        if start_mon_str in date_to_idx:
-            start_idx = date_to_idx[start_mon_str]
-            for i in range(7):
-                if start_idx + i < num_days:
-                    all_leave_dates.extend([(d, roster_dates[start_idx + i].strftime("%Y-%m-%d"))])
-        
-    day_counts = Counter([date for doc, date in all_leave_dates])
-    overlaps = [date for date, count in day_counts.items() if count > 1]
-    overlap_warning = f"⚠️ Notice: Multiple doctors are off on: {overlaps}" if overlaps else ""
+        if date_str in date_to_idx and d in doctors: manual_keys.add((d, date_to_idx[date_str], s))
 
-    doc_unavailable_days = {d: 0 for d in doctors}
+    # 🟢 DUAL-TRACK AVAILABILITY SCANNER
+    # 1. Scheduling Track (Ferie + Leave + Desiderate)
+    doc_unavailable_set = {d: set() for d in doctors}
+    # 2. Contractual Hour Track (Ferie + Leave ONLY)
+    doc_contract_off_set = {d: set() for d in doctors}
+
     for d in doctors:
-        off_set = set()
         if d in ferie:
             for date_str in ferie[d]:
-                if date_str in date_to_idx: off_set.add(date_str)
+                if date_str in date_to_idx: 
+                    doc_unavailable_set[d].add(date_str)
+                    doc_contract_off_set[d].add(date_str)
         if d in desiderate:
             for date_str in desiderate[d]:
-                if date_str in date_to_idx: off_set.add(date_str)
+                if date_str in date_to_idx: doc_unavailable_set[d].add(date_str)
         for doc_l, start_mon in leave_weeks:
             if doc_l == d:
                 start_idx_l = date_to_idx.get(start_mon, -1)
                 if start_idx_l != -1:
                     for i in range(7):
-                        if start_idx_l + i < num_days:
-                            off_set.add(roster_dates[start_idx_l + i].strftime("%Y-%m-%d"))
-        doc_unavailable_days[d] = len(off_set)
-        
-    doc_active_days = {d: max(1, num_days - doc_unavailable_days[d]) for d in doctors}
+                        if start_idx_l + i < num_days: 
+                            d_str = roster_dates[start_idx_l + i].strftime("%Y-%m-%d")
+                            doc_unavailable_set[d].add(d_str)
+                            doc_contract_off_set[d].add(d_str)
+                            
+    doc_active_days = {d: max(1, num_days - len(doc_unavailable_set[d])) for d in doctors}
+    doc_contract_days = {d: max(1, num_days - len(doc_contract_off_set[d])) for d in doctors}
 
-    # 🟢 38 HOUR LAW ENFORCEMENT & AVAILABLE POOL MATH
     total_available_hours = 0
     for day_idx in range(num_days):
         current_date_str = roster_dates[day_idx].strftime("%Y-%m-%d")
         if day_idx in sunday_equivalent_days:
-            total_available_hours += 24  # WARD_AM(6) + WARD_PM(6) + NIGHT(12)
+            total_available_hours += 24
         else:
-            total_available_hours += 36  # WARD_AM(6) + URG_AM(6) + WARD_PM(6) + URG_PM(6) + NIGHT(12)
-            if current_date_str in conditional_or_days:
-                total_available_hours += 6
+            total_available_hours += 36
+            if current_date_str in conditional_or_days: total_available_hours += 6
             for out_type, config in outpatient_configs.items():
-                if current_date_str in config['days']:
-                    total_available_hours += 6
+                if current_date_str in config['days']: total_available_hours += 6
 
-    # Subtract Gaudenzi's manual load from the available pool so the others aren't starved
-    gaudenzi_manual_active_hrs = 0
-    for (d, day_idx, s) in manual_keys:
-        if d == 'GAUDENZI':
-            if s == 'NIGHT': gaudenzi_manual_active_hrs += 12
-            elif 'REP' not in s: gaudenzi_manual_active_hrs += 6
-            
+    gaudenzi_manual_active_hrs = sum(12 if s == 'NIGHT' else (6 if 'REP' not in s else 0) for (d, day, s) in manual_keys if d == 'GAUDENZI')
     total_available_hours -= gaudenzi_manual_active_hrs
-    total_required_hours = sum(int((doc_active_days[d] / 7.0) * 38) for d in doctors if d != 'GAUDENZI')
+    
+    # Contractual minimum hours based strictly on legal days available
+    total_required_hours = sum(int((doc_contract_days[d] / 7.0) * 38) for d in doctors if d != 'GAUDENZI')
     
     if total_required_hours > total_available_hours and not debug_mode:
-        return False, None, "", f"🛑 MATHEMATICAL IMPOSSIBILITY: The 38-hour law requires {total_required_hours} total active hours from your doctors, but the department only has {total_available_hours} hours of clinical shifts scheduled this month. Please add more Outpatient Clinics or OR days to legally cover the required staff hours."
+        return False, None, f"🛑 MATHEMATICAL IMPOSSIBILITY: Law requires {total_required_hours}h total from active doctors, but department only has {total_available_hours}h scheduled. Add clinics or use Debug Mode."
 
     for day_idx in range(num_days):
         current_date_str = roster_dates[day_idx].strftime("%Y-%m-%d")
-        if day_idx in sunday_equivalent_days: min_bodies_needed = 3
-        else: min_bodies_needed = 4
+        min_bodies_needed = 3 if day_idx in sunday_equivalent_days else 4
         unavailable = 0
         for d in doctors:
-            if d == 'GAUDENZI': continue # He doesn't count toward baseline availability
-            is_off = False
-            if d in ferie and current_date_str in ferie[d]: is_off = True
-            if d in desiderate and current_date_str in desiderate[d]: is_off = True
-            for doc_l, start_mon in leave_weeks:
-                if doc_l == d:
-                    start_idx_l = date_to_idx.get(start_mon, -1)
-                    if start_idx_l != -1 and start_idx_l - 1 <= day_idx <= start_idx_l + 6:
-                        is_off = True
-            if is_off: unavailable += 1
+            if d == 'GAUDENZI': continue
+            if current_date_str in doc_unavailable_set[d]: unavailable += 1
             
         available_bodies = len([d for d in doctors if d != 'GAUDENZI']) - unavailable
-        
-        # If Gaudenzi is forced on this day, he functions as an extra body
-        if any((d == 'GAUDENZI' and day == day_idx) for (d, day, s) in manual_keys):
-            available_bodies += 1
+        if any((d == 'GAUDENZI' and day == day_idx) for (d, day, s) in manual_keys): available_bodies += 1
             
         if available_bodies < min_bodies_needed:
-            return False, None, "", f"🛑 CRITICAL STAFFING SHORTAGE ON {current_date_str}: You only have {available_bodies} doctors available, but you need at least {min_bodies_needed} to legally run the department."
+            return False, None, f"🛑 CRITICAL STAFFING SHORTAGE ON {current_date_str}: Only {available_bodies} doctors available. Need at least {min_bodies_needed}."
 
     shifts = ['WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT']
     for out_type in outpatient_configs.keys(): shifts.append(f'OUT_{out_type}_AM')
-    
     day_active = [s for s in shifts if s not in ['NIGHT', 'REP_NIGHT', 'REP_DAY']]
     
     model = cp_model.CpModel()
@@ -300,37 +247,25 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
 
     objective_terms = []
 
-    # 🟢 1. STRICT MANUAL LOCKS
     for (d, date_str, s) in manual_assignments:
         if date_str in date_to_idx and d in doctors:
             key = (d, date_to_idx[date_str], s)
             if key in work: model.Add(work[key] == 1)
 
-    # 🟢 2. GAUDENZI IS MANUAL ONLY
     if 'GAUDENZI' in doctors:
         for day_idx in range(num_days):
             for s in shifts:
-                if ('GAUDENZI', day_idx, s) not in manual_keys:
-                    model.Add(work[('GAUDENZI', day_idx, s)] == 0)
+                if ('GAUDENZI', day_idx, s) not in manual_keys: model.Add(work[('GAUDENZI', day_idx, s)] == 0)
 
-    for d, dates in ferie.items():
-        if d in doctors and d != 'GAUDENZI':
-            for date_str in dates:
-                if date_str in date_to_idx:
-                    for s in shifts: model.Add(work[(d, date_to_idx[date_str], s)] == 0)
-                
-    for d, dates in desiderate.items():
-        if d in doctors and d != 'GAUDENZI':
-            for date_str in dates:
-                if date_str in date_to_idx:
-                    for s in shifts: model.Add(work[(d, date_to_idx[date_str], s)] == 0)
+    for d in doctors:
+        if d == 'GAUDENZI': continue
+        for date_str in doc_unavailable_set[d]:
+            if date_str in date_to_idx:
+                for s in shifts: model.Add(work[(d, date_to_idx[date_str], s)] == 0)
 
     for d, start_monday_str in leave_weeks:
         if d in doctors and d != 'GAUDENZI' and start_monday_str in date_to_idx:
             start_idx = date_to_idx[start_monday_str]
-            for i in range(7):
-                if 0 <= start_idx + i < num_days:
-                    for s in shifts: model.Add(work[(d, start_idx + i, s)] == 0)
             if 0 <= start_idx - 1 < num_days:
                 for s in shifts: model.Add(work[(d, start_idx - 1, s)] == 0)
             if 0 <= start_idx - 4 < num_days:
@@ -338,7 +273,6 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
                 
     for day_idx in range(num_days):
         current_date_str = roster_dates[day_idx].strftime("%Y-%m-%d")
-        
         model.AddExactlyOne(work[(d, day_idx, 'NIGHT')] for d in doctors)
         model.AddExactlyOne(work[(d, day_idx, 'REP_NIGHT')] for d in doctors)
         
@@ -347,14 +281,12 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             model.AddExactlyOne(work[(d, day_idx, 'URG_AM')] for d in doctors)
             model.AddExactlyOne(work[(d, day_idx, 'WARD_PM')] for d in doctors)
             model.AddExactlyOne(work[(d, day_idx, 'URG_PM')] for d in doctors)
-            
             for d in doctors: model.Add(work[(d, day_idx, 'REP_DAY')] == 0)
             
             if current_date_str in conditional_or_days:
                 model.AddExactlyOne(work[(d, day_idx, 'OR_AM')] for d in doctors)
                 for d in doctors:
-                    if not doctor_capabilities.get(d, {}).get("OR Capable", False): 
-                        model.Add(work[(d, day_idx, 'OR_AM')] == 0)
+                    if not doctor_capabilities.get(d, {}).get("OR Capable", False): model.Add(work[(d, day_idx, 'OR_AM')] == 0)
             else:
                 for d in doctors: model.Add(work[(d, day_idx, 'OR_AM')] == 0)
                 
@@ -363,24 +295,21 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
                 if current_date_str in config['days']:
                     model.AddExactlyOne(work[(d, day_idx, s_name)] for d in doctors)
                     for d in doctors:
-                        if d not in config['capable']: 
-                            model.Add(work[(d, day_idx, s_name)] == 0)
+                        if d not in config['capable']: model.Add(work[(d, day_idx, s_name)] == 0)
                 else:
                     for d in doctors: model.Add(work[(d, day_idx, s_name)] == 0)
         else: 
             model.AddExactlyOne(work[(d, day_idx, 'WARD_AM')] for d in doctors) 
             model.AddExactlyOne(work[(d, day_idx, 'WARD_PM')] for d in doctors) 
             model.AddExactlyOne(work[(d, day_idx, 'REP_DAY')] for d in doctors)
-            
             for d in doctors:
                 for s in shifts:
-                    if s not in ['WARD_AM', 'WARD_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT']: 
-                        model.Add(work[(d, day_idx, s)] == 0)
+                    if s not in ['WARD_AM', 'WARD_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT']: model.Add(work[(d, day_idx, s)] == 0)
 
     day_name_to_num = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 'Friday': 4, 'Saturday': 5, 'Sunday': 6}
 
     for d in doctors:
-        if d == 'GAUDENZI': continue # <--- Bypass all automated physics for Gaudenzi
+        if d == 'GAUDENZI': continue
         
         pp_day_num = day_name_to_num.get(private_practice_afternoons.get(d, "").strip().capitalize(), -1)
         for day_idx in range(num_days):
@@ -419,11 +348,9 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
                     model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 2)
                     if day_idx not in sunday_equivalent_days:
                         model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 1).OnlyEnforceIf(is_pre_night.Not())
-                    
                     pre_night_double = model.NewBoolVar('')
                     model.Add(sum(work[(d, day_idx, s)] for s in day_active) == 2).OnlyEnforceIf(pre_night_double)
                     model.Add(sum(work[(d, day_idx, s)] for s in day_active) != 2).OnlyEnforceIf(pre_night_double.Not())
-                    
                     ideal_pre_night = model.NewBoolVar('')
                     model.AddBoolAnd([is_pre_night, pre_night_double, work[(d, day_idx, 'REP_NIGHT')]]).OnlyEnforceIf(ideal_pre_night)
                     objective_terms.append(1000 * ideal_pre_night)
@@ -440,45 +367,35 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
         for week_start_idx in range(0, num_days, 7):
             fri_idx, sat_idx, sun_idx = week_start_idx + 4, week_start_idx + 5, week_start_idx + 6
             gw_var = model.NewBoolVar(f'gw_{d}_{week_start_idx}')
-            
             ruining_shifts = [work[(d, fri_idx, 'NIGHT')], work[(d, fri_idx, 'REP_NIGHT')]]
-            for s in shifts:
-                ruining_shifts.extend([work[(d, sat_idx, s)], work[(d, sun_idx, s)]])
-                
+            for s in shifts: ruining_shifts.extend([work[(d, sat_idx, s)], work[(d, sun_idx, s)]])
             model.Add(sum(ruining_shifts) == 0).OnlyEnforceIf(gw_var)
             model.Add(sum(ruining_shifts) > 0).OnlyEnforceIf(gw_var.Not())
             doctor_gws.append(gw_var)
             objective_terms.append(-5 * int(lifetime[d]['golden_weekends']) * gw_var)
             
-        if not debug_mode:
-            model.Add(sum(doctor_gws) >= 1)
+        if not debug_mode: model.Add(sum(doctor_gws) >= 1)
 
     weeks = [range(i, i + 7) for i in range(0, num_days, 7)]
 
-    # 🟢 MANDATORY HOUR LIMITS & PROPORTIONAL EQUITY (Excluding Gaudenzi)
     surplus_hours = max(0, total_available_hours - total_required_hours)
     max_flex = int(surplus_hours / len([d for d in doctors if d != 'GAUDENZI'])) + 18 
 
     if not debug_mode:
         for d in doctors:
-            if d == 'GAUDENZI': continue # Bypass
-            tgt_hours = int((doc_active_days[d] / 7.0) * 38)
+            if d == 'GAUDENZI': continue
+            tgt_hours = int((doc_contract_days[d] / 7.0) * 38)
             active_expr = sum(work[(d, day_idx, s)] * 6 for day_idx in range(num_days) for s in day_active) + \
                           sum(work[(d, day_idx, 'NIGHT')] * 12 for day_idx in range(num_days))
-            
-            # Floor
             model.Add(active_expr >= tgt_hours)
-            # Ceiling
             model.Add(active_expr <= tgt_hours + max_flex)
 
         night_doctors = [d for d in doctors if d not in ['FINIZIO', 'GAUDENZI']]
-        total_active_night_days = sum(doc_active_days[d] for d in night_doctors)
-        
+        total_contract_night_days = sum(doc_contract_days[d] for d in night_doctors)
         holiday_doctors = [d for d in doctors if d != 'GAUDENZI']
-        total_active_hol_days = sum(doc_active_days[d] for d in holiday_doctors)
-
+        total_contract_hol_days = sum(doc_contract_days[d] for d in holiday_doctors)
         standard_doctors = [d for d in doctors if d != 'GAUDENZI']
-        total_active_std_days = sum(doc_active_days[d] for d in standard_doctors)
+        total_contract_std_days = sum(doc_contract_days[d] for d in standard_doctors)
         
         total_day_shifts = 0
         for day_idx in range(num_days):
@@ -492,13 +409,13 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
                 total_day_shifts += 2
 
         for d in night_doctors:
-            expected_nights = (doc_active_days[d] / total_active_night_days) * num_days if total_active_night_days else 0
+            expected_nights = (doc_contract_days[d] / total_contract_night_days) * num_days if total_contract_night_days else 0
             min_n = max(0, int(expected_nights) - 1)
             max_n = int(expected_nights) + 2
             model.Add(sum(work[(d, day_idx, 'NIGHT')] for day_idx in range(num_days)) >= min_n)
             model.Add(sum(work[(d, day_idx, 'NIGHT')] for day_idx in range(num_days)) <= max_n)
             
-            expected_rn = (doc_active_days[d] / total_active_night_days) * num_days if total_active_night_days else 0
+            expected_rn = (doc_contract_days[d] / total_contract_night_days) * num_days if total_contract_night_days else 0
             min_rn = max(0, int(expected_rn) - 2)
             max_rn = int(expected_rn) + 3
             model.Add(sum(work[(d, day_idx, 'REP_NIGHT')] for day_idx in range(num_days)) >= min_rn)
@@ -506,33 +423,33 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
 
         for d in holiday_doctors:
             total_hols = len(sunday_equivalent_days) * 2
-            expected_hols = (doc_active_days[d] / total_active_hol_days) * total_hols if total_active_hol_days else 0
+            expected_hols = (doc_contract_days[d] / total_contract_hol_days) * total_hols if total_contract_hol_days else 0
             min_h = max(0, int(expected_hols) - 2)
             max_h = int(expected_hols) + 2
             model.Add(sum(work[(d, day_idx, s)] for day_idx in sunday_equivalent_days for s in ['WARD_AM', 'WARD_PM']) >= min_h)
             model.Add(sum(work[(d, day_idx, s)] for day_idx in sunday_equivalent_days for s in ['WARD_AM', 'WARD_PM']) <= max_h)
             
-            expected_rd = (doc_active_days[d] / total_active_hol_days) * len(sunday_equivalent_days) if total_active_hol_days else 0
+            expected_rd = (doc_contract_days[d] / total_contract_hol_days) * len(sunday_equivalent_days) if total_contract_hol_days else 0
             min_rd = max(0, int(expected_rd) - 1)
             max_rd = int(expected_rd) + 2
             model.Add(sum(work[(d, day_idx, 'REP_DAY')] for day_idx in sunday_equivalent_days) >= min_rd)
             model.Add(sum(work[(d, day_idx, 'REP_DAY')] for day_idx in sunday_equivalent_days) <= max_rd)
 
         for d in standard_doctors:
-            expected_days = (doc_active_days[d] / total_active_std_days) * total_day_shifts if total_active_std_days else 0
+            expected_days = (doc_contract_days[d] / total_contract_std_days) * total_day_shifts if total_contract_std_days else 0
             min_d = max(0, int(expected_days) - 4)
             max_d = int(expected_days) + 6
             model.Add(sum(work[(d, day_idx, s)] for day_idx in range(num_days) for s in day_active) >= min_d)
             model.Add(sum(work[(d, day_idx, s)] for day_idx in range(num_days) for s in day_active) <= max_d)
 
     for d in doctors:
-        if d == 'GAUDENZI': continue # Bypass
+        if d == 'GAUDENZI': continue
         if doctor_capabilities.get(d, {}).get("Ward Preferred", False):
             for day_idx in range(num_days):
                 objective_terms.extend([20 * work[(d, day_idx, 'WARD_AM')], 20 * work[(d, day_idx, 'WARD_PM')]])
 
     for d in doctors:
-        if d == 'GAUDENZI': continue # Bypass
+        if d == 'GAUDENZI': continue
         for day_idx in range(num_days - 1):
             am_pm = model.NewBoolVar('')
             model.AddBoolAnd([work[(d, day_idx, 'WARD_AM')], work[(d, day_idx+1, 'WARD_PM')]]).OnlyEnforceIf(am_pm)
@@ -546,12 +463,10 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx] for s in ['WARD_AM', 'WARD_PM']) > 0).OnlyEnforceIf(ward_active)
             model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx] for s in ['WARD_AM', 'WARD_PM']) == 0).OnlyEnforceIf(ward_active.Not())
             objective_terms.append(-200 * ward_active)
-            
             if w_idx < len(weeks) - 1:
                 ward_next_active = model.NewBoolVar('')
                 model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx+1] for s in ['WARD_AM', 'WARD_PM']) > 0).OnlyEnforceIf(ward_next_active)
                 model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx+1] for s in ['WARD_AM', 'WARD_PM']) == 0).OnlyEnforceIf(ward_next_active.Not())
-                
                 consecutive_ward = model.NewBoolVar('')
                 model.AddBoolAnd([ward_active, ward_next_active]).OnlyEnforceIf(consecutive_ward)
                 objective_terms.append(-800 * consecutive_ward)
@@ -581,7 +496,6 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             if curr_date.weekday() == 5:
                 objective_terms.append(-1 * sat_pts * work[(d, day_idx, 'NIGHT')])
                 for s in day_active: objective_terms.append(-1 * int(sat_pts/2) * work[(d, day_idx, s)])
-                
             if curr_date.weekday() == 6:
                 objective_terms.append(-1 * sun_pts * work[(d, day_idx, 'NIGHT')])
                 for s in day_active: objective_terms.append(-1 * int(sun_pts/2) * work[(d, day_idx, s)])
@@ -607,311 +521,331 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
     status = solver.Solve(model)
     
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-        monthly = {doc: {'nights': 0.0, 'doubles': 0.0, 'saturdays': 0.0, 'sundays': 0.0, 'holidays': 0.0, 'super_holidays': 0.0, 'golden_weekends': 0.0, 'reps': 0.0, 'total_shifts': 0.0, 'total_hours': 0.0} for doc in doctors}
-        doc_schedule = {doc: {day_idx: [] for day_idx in range(num_days)} for doc in doctors}
-        
-        for day_idx in range(num_days):
-            for s in shifts:
-                for doc in doctors:
-                    if solver.Value(work[(doc, day_idx, s)]) == 1: doc_schedule[doc][day_idx].append(s)
-
-        for doc in doctors:
-            for day_idx in range(num_days):
-                curr_date = roster_dates[day_idx]
-                worked_today = doc_schedule[doc][day_idx]
-                active_shifts = [s for s in worked_today if s in day_active]
-                rep_shifts = [s for s in worked_today if s in ['REP_DAY', 'REP_NIGHT']]
-                
-                for s in worked_today:
-                    monthly[doc]['total_shifts'] += 1
-                    if s == 'NIGHT':
-                        monthly[doc]['total_hours'] += 12 
-                    elif 'REP' in s:
-                        monthly[doc]['total_hours'] += 0 
-                    else:
-                        monthly[doc]['total_hours'] += 6
-                
-                if 'NIGHT' in worked_today:
-                    monthly[doc]['nights'] += 1
-                    if commit_to_history: lifetime[doc]['nights'] += 1
-                
-                if len(rep_shifts) > 0:
-                    monthly[doc]['reps'] += len(rep_shifts)
-                    if commit_to_history: lifetime[doc]['reps'] += len(rep_shifts)
-                    
-                if len(active_shifts) >= 2:
-                    monthly[doc]['doubles'] += 1
-                    if commit_to_history: lifetime[doc]['doubles'] += 1
-                    
-                day_pts = 0.0
-                if 'NIGHT' in worked_today: day_pts = 1.0
-                else: day_pts = len(active_shifts) * 0.5
-                
-                if curr_date.weekday() == 5:
-                    monthly[doc]['saturdays'] += day_pts
-                    if commit_to_history: lifetime[doc]['saturdays'] += day_pts
-                elif curr_date.weekday() == 6:
-                    monthly[doc]['sundays'] += day_pts
-                    if commit_to_history: lifetime[doc]['sundays'] += day_pts
-                    
-                if worked_today and (curr_date in it_holidays or curr_date.strftime("%Y-%m-%d") in manual_festivities):
-                    monthly[doc]['holidays'] += 1
-                    if commit_to_history: lifetime[doc]['holidays'] += 1
-
-                is_easter = (it_holidays.get(curr_date) == "Pasqua di Resurrezione")
-                is_proper_holiday = ((curr_date.month == 12 and curr_date.day == 25) or 
-                                     (curr_date.month == 1 and curr_date.day == 1) or
-                                     (curr_date.month == 4 and curr_date.day == 25) or
-                                     (curr_date.month == 6 and curr_date.day in [1, 2]) or
-                                     (curr_date.month == 8 and curr_date.day == 15) or is_easter)
-                is_eve = (curr_date.month == 12 and curr_date.day in [24, 31])
-                
-                sh_pts = 0.0
-                if (is_eve and 'NIGHT' in worked_today) or (is_proper_holiday and len(active_shifts) > 0):
-                    sh_pts = 1.0
-                elif (is_proper_holiday and len(rep_shifts) > 0) or (is_eve and 'REP_NIGHT' in worked_today):
-                    sh_pts = 0.5
-                    
-                if sh_pts > 0:
-                    monthly[doc]['super_holidays'] += sh_pts
-                    if commit_to_history: lifetime[doc]['super_holidays'] += sh_pts
-
-            for week_start_idx in range(0, num_days, 7):
-                ruined_fri = 'NIGHT' in doc_schedule[doc][week_start_idx + 4] or 'REP_NIGHT' in doc_schedule[doc][week_start_idx + 4]
-                if not ruined_fri and not doc_schedule[doc][week_start_idx + 5] and not doc_schedule[doc][week_start_idx + 6]:
-                    monthly[doc]['golden_weekends'] += 1
-                    if commit_to_history: lifetime[doc]['golden_weekends'] += 1
-
-        # ==========================================
-        # 🟢 EXCEL (.xlsx) EXPORT ENGINE
-        # ==========================================
-        output = io.BytesIO()
-        workbook = xlsxwriter.Workbook(output, {'in_memory': True})
-        
-        worksheet = workbook.add_worksheet('Master Schedule')
-        
-        header_format = workbook.add_format({'bold': True, 'bg_color': '#E8E8E8', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-        section_format = workbook.add_format({'bold': True, 'bg_color': '#4F4F4F', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-        shift_format = workbook.add_format({'bold': True, 'bg_color': '#F5F5F5', 'border': 1, 'align': 'left'})
-        empty_border = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
-        gray_dash_format = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_color': '#D3D3D3'})
-        
-        doc_formats = {}
-        for d in doctors:
-            hex_color = doctor_colors.get(d, '#FFFFFF')
-            doc_formats[d] = workbook.add_format({'bg_color': hex_color, 'border': 1, 'align': 'center', 'bold': True, 'valign': 'vcenter'})
-
-        row_cursor = 0
-        
+        draft_grids = {}
         for w_idx, week_start_idx in enumerate(range(0, num_days, 7)):
-            worksheet.write(row_cursor, 0, f"WEEK {w_idx + 1}", header_format)
-            for i in range(7):
-                day_date = roster_dates[week_start_idx + i]
-                day_str = f"{calendar.day_abbr[day_date.weekday()]} {day_date.strftime('%b %d')}"
-                if week_start_idx + i in sunday_equivalent_days: day_str += " (*)"
-                worksheet.write(row_cursor, i + 1, day_str, header_format)
+            week_dates = roster_dates[week_start_idx : week_start_idx + 7]
+            col_names = [d.strftime("%Y-%m-%d") for d in week_dates]
+            df_dict = {"Shift": shifts}
+            for c in col_names: df_dict[c] = [""] * len(shifts)
+            df = pd.DataFrame(df_dict)
             
+            for i, d_date in enumerate(week_dates):
+                day_idx = week_start_idx + i
+                d_str = d_date.strftime("%Y-%m-%d")
+                if day_idx >= num_days: continue
+                for s in shifts:
+                    for d in doctors:
+                        if solver.Value(work[(d, day_idx, s)]) == 1:
+                            df.loc[df["Shift"] == s, d_str] = d
+            draft_grids[w_idx] = df
+            
+        return True, draft_grids, overlap_warning
+    else:
+        return False, None, "Constraints are too tight. The algorithm cannot find a mathematically legal schedule. Try using Emergency Debug Mode."
+
+
+# ==========================================
+# 4. EXPORT ENGINE (Reads Edited UI Draft)
+# ==========================================
+def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or_days, manual_festivities,
+                                outpatient_configs, ferie, leave_weeks, desiderate, doctor_colors, doctors_list):
+    
+    doctors = doctors_list
+    roster_dates = get_roster_dates(year, month)
+    num_days = len(roster_dates)
+    date_to_idx = {d.strftime("%Y-%m-%d"): idx for idx, d in enumerate(roster_dates)}
+    it_holidays = holidays.IT(years=[year-1, year, year+1])
+    
+    ledger = load_historical_counters()
+    lifetime = {d: get_lifetime_stats(ledger, d) for d in doctors}
+
+    sunday_equivalent_days = []
+    for day_idx, current_date in enumerate(roster_dates):
+        is_sunday = current_date.weekday() == 6
+        is_holiday = current_date in it_holidays or current_date.strftime("%Y-%m-%d") in manual_festivities
+        if is_sunday or is_holiday: sunday_equivalent_days.append(day_idx)
+            
+    doc_contract_off_set = {d: set() for d in doctors}
+    for d in doctors:
+        if d in ferie:
+            for date_str in ferie[d]:
+                if date_str in date_to_idx: doc_contract_off_set[d].add(date_str)
+        for doc_l, start_mon in leave_weeks:
+            if doc_l == d:
+                start_idx_l = date_to_idx.get(start_mon, -1)
+                if start_idx_l != -1:
+                    for i in range(7):
+                        if start_idx_l + i < num_days: doc_contract_off_set[d].add(roster_dates[start_idx_l + i].strftime("%Y-%m-%d"))
+                        
+    doc_contract_days = {d: max(1, num_days - len(doc_contract_off_set[d])) for d in doctors}
+
+    doc_schedule = {doc: {day_idx: [] for day_idx in range(num_days)} for doc in doctors}
+    monthly_stats = {doc: {'nights': 0.0, 'doubles': 0.0, 'saturdays': 0.0, 'sundays': 0.0, 'holidays': 0.0, 'super_holidays': 0.0, 'golden_weekends': 0.0, 'reps': 0.0, 'total_shifts': 0.0, 'total_hours': 0.0} for doc in doctors}
+    
+    for w_idx, df_w in edited_weekly_grids.items():
+        week_dates = roster_dates[w_idx*7 : (w_idx*7)+7]
+        for idx, row in df_w.iterrows():
+            s = row["Shift"]
+            for i, d_date in enumerate(week_dates):
+                day_idx = (w_idx * 7) + i
+                if day_idx >= num_days: continue
+                d_str = d_date.strftime("%Y-%m-%d")
+                assigned_doc = str(row.get(d_str, "")).strip().upper()
+                if assigned_doc and assigned_doc in doctors:
+                    doc_schedule[assigned_doc][day_idx].append(s)
+
+    shifts = ['WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT']
+    for out_type in outpatient_configs.keys(): shifts.append(f'OUT_{out_type}_AM')
+    day_active = [s for s in shifts if s not in ['NIGHT', 'REP_NIGHT', 'REP_DAY']]
+
+    month_key = f"{year}-{month:02d}"
+    for doc in doctors:
+        for day_idx in range(num_days):
+            curr_date = roster_dates[day_idx]
+            worked_today = doc_schedule[doc][day_idx]
+            active_shifts = [s for s in worked_today if s in day_active]
+            rep_shifts = [s for s in worked_today if s in ['REP_DAY', 'REP_NIGHT']]
+            
+            for s in worked_today:
+                monthly_stats[doc]['total_shifts'] += 1
+                if s == 'NIGHT': monthly_stats[doc]['total_hours'] += 12 
+                elif 'REP' in s: monthly_stats[doc]['total_hours'] += 0 
+                else: monthly_stats[doc]['total_hours'] += 6
+            
+            if 'NIGHT' in worked_today: monthly_stats[doc]['nights'] += 1
+            if len(rep_shifts) > 0: monthly_stats[doc]['reps'] += len(rep_shifts)
+            if len(active_shifts) >= 2: monthly_stats[doc]['doubles'] += 1
+                
+            day_pts = 0.0
+            if 'NIGHT' in worked_today: day_pts = 1.0
+            else: day_pts = len(active_shifts) * 0.5
+            
+            if curr_date.weekday() == 5: monthly_stats[doc]['saturdays'] += day_pts
+            elif curr_date.weekday() == 6: monthly_stats[doc]['sundays'] += day_pts
+                
+            if worked_today and (curr_date in it_holidays or curr_date.strftime("%Y-%m-%d") in manual_festivities):
+                monthly_stats[doc]['holidays'] += 1
+
+            is_easter = (it_holidays.get(curr_date) == "Pasqua di Resurrezione")
+            is_proper_holiday = ((curr_date.month == 12 and curr_date.day == 25) or 
+                                 (curr_date.month == 1 and curr_date.day == 1) or
+                                 (curr_date.month == 4 and curr_date.day == 25) or
+                                 (curr_date.month == 6 and curr_date.day in [1, 2]) or
+                                 (curr_date.month == 8 and curr_date.day == 15) or is_easter)
+            is_eve = (curr_date.month == 12 and curr_date.day in [24, 31])
+            
+            sh_pts = 0.0
+            if (is_eve and 'NIGHT' in worked_today) or (is_proper_holiday and len(active_shifts) > 0): sh_pts = 1.0
+            elif (is_proper_holiday and len(rep_shifts) > 0) or (is_eve and 'REP_NIGHT' in worked_today): sh_pts = 0.5
+            if sh_pts > 0: monthly_stats[doc]['super_holidays'] += sh_pts
+
+        for week_start_idx in range(0, num_days, 7):
+            ruined_fri = 'NIGHT' in doc_schedule[doc][week_start_idx + 4] or 'REP_NIGHT' in doc_schedule[doc][week_start_idx + 4]
+            if not ruined_fri and not doc_schedule[doc][week_start_idx + 5] and not doc_schedule[doc][week_start_idx + 6]:
+                monthly_stats[doc]['golden_weekends'] += 1
+
+    ledger[month_key] = monthly_stats
+    with open(COUNTER_FILE, 'w') as f: json.dump(ledger, f, indent=4)
+    push_to_github(COUNTER_FILE, f"Auto-sync: Published Roster for {month_key}")
+    
+    lifetime = {d: get_lifetime_stats(ledger, d) for d in doctors}
+
+    output = io.BytesIO()
+    workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+    
+    worksheet = workbook.add_worksheet('Master Schedule')
+    header_format = workbook.add_format({'bold': True, 'bg_color': '#E8E8E8', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+    section_format = workbook.add_format({'bold': True, 'bg_color': '#4F4F4F', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+    shift_format = workbook.add_format({'bold': True, 'bg_color': '#F5F5F5', 'border': 1, 'align': 'left'})
+    empty_border = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
+    gray_dash_format = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_color': '#D3D3D3'})
+    
+    doc_formats = {}
+    for d in doctors:
+        hex_color = doctor_colors.get(d, '#FFFFFF')
+        doc_formats[d] = workbook.add_format({'bg_color': hex_color, 'border': 1, 'align': 'center', 'bold': True, 'valign': 'vcenter'})
+
+    row_cursor = 0
+    for w_idx, week_start_idx in enumerate(range(0, num_days, 7)):
+        worksheet.write(row_cursor, 0, f"WEEK {w_idx + 1}", header_format)
+        for i in range(7):
+            day_date = roster_dates[week_start_idx + i]
+            day_str = f"{calendar.day_abbr[day_date.weekday()]} {day_date.strftime('%b %d')}"
+            if week_start_idx + i in sunday_equivalent_days: day_str += " (*)"
+            worksheet.write(row_cursor, i + 1, day_str, header_format)
+        
+        row_cursor += 1
+        
+        week_shifts_am = ['WARD_AM', 'URG_AM']
+        week_shifts_pm = ['WARD_PM', 'URG_PM']
+        
+        or_open = False
+        outpatient_open = {out_type: False for out_type in outpatient_configs.keys()}
+        rep_day_open = False
+        
+        for i in range(7):
+            day_idx = week_start_idx + i
+            if day_idx >= num_days: continue
+            d_str = roster_dates[day_idx].strftime("%Y-%m-%d")
+            if day_idx in sunday_equivalent_days: rep_day_open = True
+            if d_str in conditional_or_days: or_open = True
+            for out_type, config in outpatient_configs.items():
+                if d_str in config['days']: outpatient_open[out_type] = True
+                
+        if or_open: week_shifts_am.append('OR_AM')
+        for out_type, is_open in outpatient_open.items():
+            if is_open: week_shifts_am.append(f'OUT_{out_type}_AM')
+        
+        rep_shifts = ['REP_NIGHT']
+        if rep_day_open: rep_shifts.append('REP_DAY')
+
+        for section_name, section_shifts in [("MATTINA", week_shifts_am), ("POMERIGGIO", week_shifts_pm), ("NOTTE E REPERIBILITÀ", ['NIGHT'] + rep_shifts)]:
+            worksheet.merge_range(row_cursor, 0, row_cursor, 7, section_name, section_format)
             row_cursor += 1
-            
-            week_shifts_am = ['WARD_AM', 'URG_AM']
-            week_shifts_pm = ['WARD_PM', 'URG_PM']
-            
-            or_open = False
-            outpatient_open = {out_type: False for out_type in outpatient_configs.keys()}
-            rep_day_open = False
-            
+            for s in section_shifts:
+                worksheet.write(row_cursor, 0, get_master_name(s), shift_format)
+                for i in range(7):
+                    day_idx = week_start_idx + i
+                    if day_idx >= num_days:
+                        worksheet.write(row_cursor, i + 1, "", empty_border)
+                        continue
+                    
+                    assigned_doc = ""
+                    for d in doctors:
+                        if s in doc_schedule[d][day_idx]: assigned_doc = d
+                    
+                    if assigned_doc:
+                        worksheet.write(row_cursor, i + 1, assigned_doc, doc_formats[assigned_doc])
+                    else:
+                        is_active_today = True
+                        d_str = roster_dates[day_idx].strftime("%Y-%m-%d")
+                        if s == 'OR_AM' and d_str not in conditional_or_days: is_active_today = False
+                        if s == 'REP_DAY' and day_idx not in sunday_equivalent_days: is_active_today = False
+                        if s.startswith('OUT_'):
+                            c_name = s.replace('OUT_', '').replace('_AM', '')
+                            if d_str not in outpatient_configs.get(c_name, {}).get('days', []): is_active_today = False
+                        
+                        if is_active_today: worksheet.write(row_cursor, i + 1, "", empty_border)
+                        else: worksheet.write(row_cursor, i + 1, "-", gray_dash_format)
+                row_cursor += 1
+        row_cursor += 1
+
+    dashboard_header = ['Doctor', 'Proportional Target Hours', 'Actual Active Hours', 'Difference (+/-)',
+                        'Monthly Nights', 'Monthly On-Call (Rep)', 'Monthly Doubles', 'Monthly Saturdays', 'Monthly Sundays', 'Monthly Holidays', 'Monthly Super Hols', 'Monthly Golden Wknds',
+                        'LIFETIME Nights', 'LIFETIME On-Call', 'LIFETIME Doubles', 'LIFETIME Saturdays', 'LIFETIME Sundays', 'LIFETIME Holidays', 'LIFETIME Super Hols', 'LIFETIME Golden Wknds']
+    
+    worksheet.write(row_cursor, 0, "DOCTOR STATISTICS DASHBOARD", header_format)
+    row_cursor += 1
+    
+    for col_idx, h in enumerate(dashboard_header): worksheet.write(row_cursor, col_idx, h, header_format)
+    row_cursor += 1
+    
+    for doc in doctors:
+        if doc == 'GAUDENZI':
+            doc_target_display = "MANUAL"
+            actual_hours = monthly_stats[doc]['total_hours']
+            difference_display = "N/A"
+        else:
+            doc_target = int((doc_contract_days[doc] / 7) * 38)
+            doc_target_display = doc_target
+            actual_hours = monthly_stats[doc]['total_hours']
+            difference = actual_hours - doc_target
+            difference_display = f"+{difference}" if difference > 0 else str(difference)
+        
+        data_row = [
+            doc, doc_target_display, actual_hours, difference_display,
+            monthly_stats[doc]['nights'], monthly_stats[doc]['reps'], monthly_stats[doc]['doubles'], f"{monthly_stats[doc]['saturdays']:.1f}", f"{monthly_stats[doc]['sundays']:.1f}", monthly_stats[doc]['holidays'], f"{monthly_stats[doc]['super_holidays']:.1f}", monthly_stats[doc]['golden_weekends'],
+            lifetime[doc]['nights'], lifetime[doc]['reps'], lifetime[doc]['doubles'], f"{lifetime[doc]['saturdays']:.1f}", f"{lifetime[doc]['sundays']:.1f}", lifetime[doc]['holidays'], f"{lifetime[doc]['super_holidays']:.1f}", lifetime[doc]['golden_weekends']
+        ]
+        for col_idx, val in enumerate(data_row): worksheet.write(row_cursor, col_idx, val, doc_formats[doc] if col_idx == 0 else empty_border)
+        row_cursor += 1
+
+    worksheet.set_column(0, 0, 20)
+    worksheet.set_column(1, 7, 18)
+
+    for doc in doctors:
+        doc_sheet = workbook.add_worksheet(doc)
+        doc_header_fmt = workbook.add_format({'bold': True, 'bg_color': doctor_colors.get(doc, '#E8E8E8'), 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+        cell_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+        off_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True, 'font_color': '#A0A0A0', 'italic': True})
+        holiday_fmt = workbook.add_format({'border': 1, 'bg_color': '#FFF3E0', 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+
+        days_header = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        for col_idx, day_name in enumerate(days_header): doc_sheet.write(0, col_idx, day_name, doc_header_fmt)
+        doc_sheet.set_column(0, 6, 16) 
+
+        row_c = 1
+        for w_idx, week_start_idx in enumerate(range(0, num_days, 7)):
+            doc_sheet.set_row(row_c, 55) 
             for i in range(7):
                 day_idx = week_start_idx + i
                 if day_idx >= num_days: continue
-                d_str = roster_dates[day_idx].strftime("%Y-%m-%d")
-                if day_idx in sunday_equivalent_days: rep_day_open = True
-                if d_str in conditional_or_days: or_open = True
-                for out_type, config in outpatient_configs.items():
-                    if d_str in config['days']: outpatient_open[out_type] = True
-                    
-            if or_open: week_shifts_am.append('OR_AM')
-            for out_type, is_open in outpatient_open.items():
-                if is_open: week_shifts_am.append(f'OUT_{out_type}_AM')
-            
-            rep_shifts = ['REP_NIGHT']
-            if rep_day_open: rep_shifts.append('REP_DAY')
-
-            for section_name, section_shifts in [("MATTINA", week_shifts_am), ("POMERIGGIO", week_shifts_pm), ("NOTTE E REPERIBILITÀ", ['NIGHT'] + rep_shifts)]:
-                worksheet.merge_range(row_cursor, 0, row_cursor, 7, section_name, section_format)
-                row_cursor += 1
-                for s in section_shifts:
-                    worksheet.write(row_cursor, 0, get_master_name(s), shift_format)
-                    for i in range(7):
-                        day_idx = week_start_idx + i
-                        if day_idx >= num_days:
-                            worksheet.write(row_cursor, i + 1, "", empty_border)
-                            continue
-                        
-                        assigned_doc = ""
-                        for d in doctors:
-                            if solver.Value(work[(d, day_idx, s)]) == 1:
-                                assigned_doc = d
-                        
-                        if assigned_doc:
-                            worksheet.write(row_cursor, i + 1, assigned_doc, doc_formats[assigned_doc])
-                        else:
-                            is_active_today = True
-                            d_str = roster_dates[day_idx].strftime("%Y-%m-%d")
-                            if s == 'OR_AM' and d_str not in conditional_or_days: is_active_today = False
-                            if s == 'REP_DAY' and day_idx not in sunday_equivalent_days: is_active_today = False
-                            if s.startswith('OUT_'):
-                                c_name = s.replace('OUT_', '').replace('_AM', '')
-                                if d_str not in outpatient_configs.get(c_name, {}).get('days', []): is_active_today = False
-                            
-                            if is_active_today:
-                                worksheet.write(row_cursor, i + 1, "", empty_border)
-                            else:
-                                worksheet.write(row_cursor, i + 1, "-", gray_dash_format)
-                    row_cursor += 1
-            row_cursor += 1
-
-        # --- THE DASHBOARD ---
-        dashboard_header = ['Doctor', 'Proportional Target Hours', 'Actual Active Hours', 'Difference (+/-)',
-                            'Monthly Nights', 'Monthly On-Call (Rep)', 'Monthly Doubles', 'Monthly Saturdays', 'Monthly Sundays', 'Monthly Holidays', 'Monthly Super Hols', 'Monthly Golden Wknds',
-                            'LIFETIME Nights', 'LIFETIME On-Call', 'LIFETIME Doubles', 'LIFETIME Saturdays', 'LIFETIME Sundays', 'LIFETIME Holidays', 'LIFETIME Super Hols', 'LIFETIME Golden Wknds']
-        
-        worksheet.write(row_cursor, 0, "DOCTOR STATISTICS DASHBOARD", header_format)
-        row_cursor += 1
-        
-        for col_idx, h in enumerate(dashboard_header):
-            worksheet.write(row_cursor, col_idx, h, header_format)
-        row_cursor += 1
-        
-        for doc in doctors:
-            if doc == 'GAUDENZI':
-                doc_target_display = "MANUAL"
-                actual_hours = monthly[doc]['total_hours']
-                difference_display = "N/A"
-            else:
-                doc_target = int((doc_active_days[doc] / 7) * 38)
-                doc_target_display = doc_target
-                actual_hours = monthly[doc]['total_hours']
-                difference = actual_hours - doc_target
-                difference_display = f"+{difference}" if difference > 0 else str(difference)
-            
-            data_row = [
-                doc, doc_target_display, actual_hours, difference_display,
-                monthly[doc]['nights'], monthly[doc]['reps'], monthly[doc]['doubles'], f"{monthly[doc]['saturdays']:.1f}", f"{monthly[doc]['sundays']:.1f}", monthly[doc]['holidays'], f"{monthly[doc]['super_holidays']:.1f}", monthly[doc]['golden_weekends'],
-                lifetime[doc]['nights'], lifetime[doc]['reps'], lifetime[doc]['doubles'], f"{lifetime[doc]['saturdays']:.1f}", f"{lifetime[doc]['sundays']:.1f}", lifetime[doc]['holidays'], f"{lifetime[doc]['super_holidays']:.1f}", lifetime[doc]['golden_weekends']
-            ]
-            for col_idx, val in enumerate(data_row):
-                worksheet.write(row_cursor, col_idx, val, doc_formats[doc] if col_idx == 0 else empty_border)
-            row_cursor += 1
-
-        worksheet.set_column(0, 0, 20)
-        worksheet.set_column(1, 7, 18)
-
-        # --- 2. THE INDIVIDUAL DOCTOR TABS ---
-        for doc in doctors:
-            doc_sheet = workbook.add_worksheet(doc)
-            
-            doc_header_fmt = workbook.add_format({'bold': True, 'bg_color': doctor_colors.get(doc, '#E8E8E8'), 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-            cell_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
-            off_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True, 'font_color': '#A0A0A0', 'italic': True})
-            holiday_fmt = workbook.add_format({'border': 1, 'bg_color': '#FFF3E0', 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
-
-            days_header = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-            for col_idx, day_name in enumerate(days_header):
-                doc_sheet.write(0, col_idx, day_name, doc_header_fmt)
+                curr_date = roster_dates[day_idx]
                 
-            doc_sheet.set_column(0, 6, 16) 
+                my_shifts = []
+                for s in shifts:
+                    if s in doc_schedule[doc][day_idx]:
+                        if 'REP' in s: my_shifts.append("📞 " + get_indiv_name(s))
+                        else: my_shifts.append(get_indiv_name(s))
+                        
+                is_holiday_or_weekend = (curr_date.weekday() >= 5 or day_idx in sunday_equivalent_days)
+                if my_shifts:
+                    shift_text = f"{curr_date.strftime('%b %d')}\n\n" + "\n".join(my_shifts)
+                    fmt = holiday_fmt if is_holiday_or_weekend else cell_fmt
+                else:
+                    shift_text = f"{curr_date.strftime('%b %d')}\n\nOFF"
+                    fmt = holiday_fmt if is_holiday_or_weekend else off_fmt
 
-            row_c = 1
-            for w_idx, week_start_idx in enumerate(range(0, num_days, 7)):
-                doc_sheet.set_row(row_c, 55) 
-                for i in range(7):
-                    day_idx = week_start_idx + i
-                    if day_idx >= num_days: continue
-                    curr_date = roster_dates[day_idx]
-                    
-                    my_shifts = []
-                    for s in shifts:
-                        if solver.Value(work[(doc, day_idx, s)]) == 1:
-                            if 'REP' in s:
-                                my_shifts.append("📞 " + get_indiv_name(s))
-                            else:
-                                my_shifts.append(get_indiv_name(s))
-                            
-                    is_holiday_or_weekend = (curr_date.weekday() >= 5 or day_idx in sunday_equivalent_days)
-                    
-                    if my_shifts:
-                        shift_text = f"{curr_date.strftime('%b %d')}\n\n" + "\n".join(my_shifts)
-                        fmt = holiday_fmt if is_holiday_or_weekend else cell_fmt
-                    else:
-                        shift_text = f"{curr_date.strftime('%b %d')}\n\nOFF"
-                        fmt = holiday_fmt if is_holiday_or_weekend else off_fmt
-
-                    doc_sheet.write(row_c, i, shift_text, fmt)
-                row_c += 1
-
-        # --- 3. REPERIBILITÀ UFFICIALE ---
-        rep_sheet = workbook.add_worksheet('Reperibilità Ufficiale')
-        rep_sheet.set_column(0, 0, 20)
-        rep_sheet.set_column(1, 7, 18)
-
-        title_fmt = workbook.add_format({'bold': True, 'font_size': 14, 'align': 'left', 'valign': 'vcenter'})
-        rep_sheet.write(0, 0, "CALENDARIO REPERIBILITA' UFFICIALE", title_fmt)
-        
-        row_c = 2
-        for w_idx, week_start_idx in enumerate(range(0, num_days, 7)):
-            rep_sheet.write(row_c, 0, f"WEEK {w_idx + 1}", header_format)
-            for i in range(7):
-                day_date = roster_dates[week_start_idx + i]
-                day_str = f"{calendar.day_abbr[day_date.weekday()]} {day_date.strftime('%b %d')}"
-                if week_start_idx + i in sunday_equivalent_days: day_str += " (*)"
-                rep_sheet.write(row_c, i + 1, day_str, header_format)
+                doc_sheet.write(row_c, i, shift_text, fmt)
             row_c += 1
 
-            for s in ['REP_DAY', 'REP_NIGHT']:
-                rep_sheet.write(row_c, 0, get_indiv_name(s), shift_format)
-                for i in range(7):
-                    day_idx = week_start_idx + i
-                    if day_idx >= num_days: continue
-                    assigned_doc = ""
-                    for d in doctors:
-                        if solver.Value(work[(d, day_idx, s)]) == 1:
-                            assigned_doc = d
-                    
-                    if assigned_doc:
-                        rep_sheet.write(row_c, i + 1, assigned_doc, doc_formats[assigned_doc])
-                    else:
-                        if s == 'REP_DAY' and day_idx not in sunday_equivalent_days:
-                            rep_sheet.write(row_c, i + 1, "-", gray_dash_format)
-                        else:
-                            rep_sheet.write(row_c, i + 1, "", empty_border)
-                row_c += 1
-            row_c += 2
+    rep_sheet = workbook.add_worksheet('Reperibilità Ufficiale')
+    rep_sheet.set_column(0, 0, 20)
+    rep_sheet.set_column(1, 7, 18)
+    title_fmt = workbook.add_format({'bold': True, 'font_size': 14, 'align': 'left', 'valign': 'vcenter'})
+    rep_sheet.write(0, 0, "CALENDARIO REPERIBILITA' UFFICIALE", title_fmt)
+    
+    row_c = 2
+    for w_idx, week_start_idx in enumerate(range(0, num_days, 7)):
+        rep_sheet.write(row_c, 0, f"WEEK {w_idx + 1}", header_format)
+        for i in range(7):
+            day_date = roster_dates[week_start_idx + i]
+            day_str = f"{calendar.day_abbr[day_date.weekday()]} {day_date.strftime('%b %d')}"
+            if week_start_idx + i in sunday_equivalent_days: day_str += " (*)"
+            rep_sheet.write(row_c, i + 1, day_str, header_format)
+        row_c += 1
 
-        workbook.close()
-        
-        debug_msg = " [DEBUG MODE ENABLED: Fairness metrics ignored]" if debug_mode else ""
-        if commit_to_history and not debug_mode: 
-            with open(COUNTER_FILE, 'w') as f: json.dump(lifetime, f, indent=4)
-            push_to_github(COUNTER_FILE, "Auto-sync: Official Roster Published (Stats Saved)")
-            return True, output.getvalue(), overlap_warning, f"Schedule solved! Block: {roster_dates[0].strftime('%b %d')} to {roster_dates[-1].strftime('%b %d')}. (OFFICIAL: Stats Saved){debug_msg}"
-        else:
-            return True, output.getvalue(), overlap_warning, f"Schedule solved! Block: {roster_dates[0].strftime('%b %d')} to {roster_dates[-1].strftime('%b %d')}. (SIMULATION: Stats NOT Saved){debug_msg}"
-            
-    else:
-        return False, None, overlap_warning, "Constraints are too tight. The algorithm cannot find a mathematically legal schedule. Try using Emergency Debug Mode."
+        for s in ['REP_DAY', 'REP_NIGHT']:
+            rep_sheet.write(row_c, 0, get_indiv_name(s), shift_format)
+            for i in range(7):
+                day_idx = week_start_idx + i
+                if day_idx >= num_days: continue
+                assigned_doc = ""
+                for d in doctors:
+                    if s in doc_schedule[d][day_idx]: assigned_doc = d
+                
+                if assigned_doc: rep_sheet.write(row_c, i + 1, assigned_doc, doc_formats[assigned_doc])
+                else:
+                    if s == 'REP_DAY' and day_idx not in sunday_equivalent_days: rep_sheet.write(row_c, i + 1, "-", gray_dash_format)
+                    else: rep_sheet.write(row_c, i + 1, "", empty_border)
+            row_c += 1
+        row_c += 2
+
+    workbook.close()
+    return output.getvalue()
 
 # ==========================================
-# 3. THE GRAPHICAL USER INTERFACE (GUI)
+# 5. THE GRAPHICAL USER INTERFACE (GUI)
 # ==========================================
 st.set_page_config(page_title="Cardiology Scheduler", page_icon="🩺", layout="wide")
 
-if "app_initialized_v2" not in st.session_state:
+if "app_initialized_v3" not in st.session_state:
     settings = load_persistent_settings()
     st.session_state.clinics_base_df = pd.DataFrame({"Clinic Name": settings["clinics"]})
     st.session_state.docs_base_df = pd.DataFrame(settings["docs_base"]) 
     st.session_state.cap_base_df = pd.DataFrame(settings["capabilities"]) 
     st.session_state.absences_base_df = pd.DataFrame(columns=["Doctor", "Ferie (YYYY-MM-DD)", "Desiderate (YYYY-MM-DD)", "Leave Weeks (Type the Monday)"])
-    st.session_state.app_initialized_v2 = True
+    st.session_state.app_initialized_v3 = True
 
 current_clinics = [str(c).strip().upper().replace(" ", "_") for c in st.session_state.clinics_base_df["Clinic Name"].dropna().unique() if str(c).strip()]
 
@@ -971,7 +905,7 @@ with st.sidebar:
 
 ui_roster_dates = get_roster_dates(selected_year, selected_month)
 
-tab1, tab2, tab3, tab4 = st.tabs(["📝 Absences (Ferie/Leave)", "🔒 Forced Shifts", "🏥 OR & Outpatient Clinics", "🚀 Generate Schedule"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Absences (Ferie/Leave)", "🔒 Forced Shifts", "🏥 OR & Outpatient Clinics", "⚙️ Generate Draft", "🚀 Edit & Publish"])
 
 with tab1:
     st.subheader("Monthly Absences (Ferie, Desiderate, Leave Weeks)")
@@ -1005,20 +939,20 @@ with tab2:
     
     dynamic_shift_options = ['WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT'] + [f'OUT_{c}_AM' for c in current_clinics]
 
-    if st.session_state.get("current_ym") != f"{selected_year}-{selected_month}":
-        st.session_state["current_ym"] = f"{selected_year}-{selected_month}"
+    if st.session_state.get("current_ym_manual") != f"{selected_year}-{selected_month}":
+        st.session_state["current_ym_manual"] = f"{selected_year}-{selected_month}"
         for k in list(st.session_state.keys()):
-            if k.startswith("grid_base_") or k.startswith("last_edited_grid_"):
+            if k.startswith("manual_grid_base_") or k.startswith("last_edited_manual_grid_"):
                 del st.session_state[k]
 
-    edited_weekly_grids = {}
+    edited_manual_grids = {}
     for w_idx, week_start_idx in enumerate(range(0, len(ui_roster_dates), 7)):
-        st.markdown(f"#### Week {w_idx + 1}")
+        st.markdown(f"#### Forced Week {w_idx + 1}")
         week_dates = ui_roster_dates[week_start_idx : week_start_idx + 7]
         col_names = [d.strftime("%Y-%m-%d") for d in week_dates]
         
-        base_key = f"grid_base_{w_idx}"
-        last_edited_key = f"last_edited_grid_{w_idx}"
+        base_key = f"manual_grid_base_{w_idx}"
+        last_edited_key = f"last_edited_manual_grid_{w_idx}"
         
         if base_key not in st.session_state:
             init_dict = {"Shift": dynamic_shift_options}
@@ -1050,10 +984,10 @@ with tab2:
             column_config=col_config, 
             hide_index=True, 
             use_container_width=True,
-            key=f"editor_grid_week_{w_idx}"
+            key=f"editor_manual_grid_week_{w_idx}"
         )
         st.session_state[last_edited_key] = edited_grid
-        edited_weekly_grids[w_idx] = edited_grid
+        edited_manual_grids[w_idx] = edited_grid
         st.markdown("---")
 
 with tab3:
@@ -1076,7 +1010,6 @@ with tab3:
 
     st.markdown("---")
     st.subheader("Manage Outpatient Clinics")
-    st.markdown("##### 1. Define Clinics")
     
     edited_clinics_df = st.data_editor(
         st.session_state.clinics_base_df, 
@@ -1087,8 +1020,6 @@ with tab3:
     )
     st.session_state.clinics_base_df = edited_clinics_df
     current_clinics = [str(c).strip().upper().replace(" ", "_") for c in edited_clinics_df["Clinic Name"].dropna().unique() if str(c).strip()]
-    
-    st.markdown("##### 2. Schedule Clinics")
     
     outpatient_setup = {}
     if current_clinics:
@@ -1109,68 +1040,40 @@ with tab3:
                     'days': [d.strftime("%Y-%m-%d") for d in final_clinic_dates],
                     'capable': capable
                 }
-    else:
-        st.info("No clinics defined. Add a clinic name above to schedule it.")
 
 with tab4:
-    st.subheader("Generate File")
+    st.subheader("⚙️ Generate Draft Schedule")
+    st.markdown("The algorithm will solve all constraints and create an editable draft in **Tab 5**. This does NOT save to the historical counters.")
     
-    col_sim, col_pub = st.columns(2)
-    
-    with col_sim:
-        simulate_clicked = st.button("🛠️ SIMULATE SCHEDULE (No Save)", use_container_width=True)
-    with col_pub:
-        publish_clicked = st.button("🚀 APPROVE & PUBLISH (Save Stats)", use_container_width=True, type="primary")
-    
-    if simulate_clicked or publish_clicked:
-        is_commit = publish_clicked
-        
+    if st.button("🛠️ GENERATE DRAFT", use_container_width=True):
         if len(current_doctors) == 0:
-            st.error("❌ Please add at least one doctor to the Persistent Settings in the Sidebar.")
+            st.error("❌ Please add at least one doctor to the Persistent Settings.")
         else:
             with st.spinner("Calculating mathematical constraints... This may take up to 45 seconds."):
-                
                 pp_dict = {}
-                doc_colors_ui = {}
                 doc_capabilities_dict = {}
-
                 for idx, row in edited_docs_df.iterrows():
                     doc = str(row["Doctor"]).strip().upper()
-                    if not doc: continue
                     pp = row.get("Private Practice (Afternoon)", "")
                     if pd.notna(pp) and pp: pp_dict[doc] = pp
-                    col = row.get("Color", "White")
-                    doc_colors_ui[doc] = COLOR_PALETTE.get(col, "#FFFFFF")
-
                 for idx, row in edited_cap_df.iterrows():
                     doc = row["Doctor"]
                     doc_capabilities_dict[doc] = {col: bool(row[col]) for col in cap_cols if col != "Doctor"}
 
-                ferie_dict = {}
-                desiderate_dict = {}
-                leave_list = []
-
+                ferie_dict, desiderate_dict, leave_list = {}, {}, []
                 for idx, row in edited_absences_df.iterrows():
                     doc = str(row["Doctor"]).strip().upper()
                     if not doc: continue
-                    
                     ferie = row.get("Ferie (YYYY-MM-DD)", "")
-                    if pd.notna(ferie) and ferie:
-                        dates = [d.strip() for d in str(ferie).split(",") if d.strip()]
-                        if dates: ferie_dict[doc] = dates
-                        
+                    if pd.notna(ferie) and ferie: ferie_dict[doc] = [d.strip() for d in str(ferie).split(",") if d.strip()]
                     des = row.get("Desiderate (YYYY-MM-DD)", "")
-                    if pd.notna(des) and des:
-                        dates = [d.strip() for d in str(des).split(",") if d.strip()]
-                        if dates: desiderate_dict[doc] = dates
-                        
+                    if pd.notna(des) and des: desiderate_dict[doc] = [d.strip() for d in str(des).split(",") if d.strip()]
                     l_w = row.get("Leave Weeks (Type the Monday)", "")
-                    if pd.notna(l_w) and l_w:
-                        dates = [d.strip() for d in str(l_w).split(",") if d.strip()]
-                        for d_str in dates: leave_list.append((doc, d_str))
+                    if pd.notna(l_w) and l_w: 
+                        for d_str in [d.strip() for d in str(l_w).split(",") if d.strip()]: leave_list.append((doc, d_str))
 
                 manual_shifts = []
-                for w_idx, df_w in edited_weekly_grids.items():
+                for w_idx, df_w in edited_manual_grids.items():
                     for idx, row in df_w.iterrows():
                         shift_val = str(row["Shift"]).strip().upper()
                         for d in ui_roster_dates[w_idx*7 : (w_idx*7)+7]:
@@ -1179,32 +1082,85 @@ with tab4:
                             if pd.notna(doc) and str(doc).strip():
                                 manual_shifts.append((str(doc).strip().upper(), d_str, shift_val))
 
-                manual_festivities = []
-
-                success, excel_data, warnings, message = generate_cardiology_schedule(
+                success, draft_grids, warning = generate_draft_schedule(
                     year=selected_year, month=selected_month, conditional_or_days=or_days_formatted, 
-                    manual_festivities=manual_festivities, manual_assignments=manual_shifts,
+                    manual_festivities=[], manual_assignments=manual_shifts,
                     doctor_capabilities=doc_capabilities_dict, outpatient_configs=outpatient_setup, 
                     ferie=ferie_dict, leave_weeks=leave_list, desiderate=desiderate_dict,
-                    private_practice_afternoons=pp_dict, doctor_colors=doc_colors_ui, doctors_list=current_doctors,
-                    commit_to_history=is_commit, debug_mode=debug_toggle
+                    private_practice_afternoons=pp_dict, doctors_list=current_doctors, debug_mode=debug_toggle
                 )
                 
                 if success:
-                    st.success(f"✅ {message}")
-                    if warnings: st.warning(warnings)
-                    
-                    timestamp = datetime.datetime.now().strftime("%H%M%S")
-                    prefix = "OFFICIAL_" if is_commit else "DRAFT_"
-                    dl_filename = f'{prefix}cardiology_schedule_{selected_year}_{selected_month}_{timestamp}.xlsx'
-                    
-                    st.download_button(
-                        label="📥 Download Excel Schedule",
-                        data=excel_data,
-                        file_name=dl_filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary"
-                    )
+                    st.success("✅ Draft generated successfully! Go to **Tab 5 (🚀 Edit & Publish)** to review, modify, and publish the final Excel.")
+                    if warning: st.warning(warning)
+                    st.session_state.generated_draft_grids = draft_grids
+                    for k in list(st.session_state.keys()):
+                        if k.startswith("draft_editor_"): del st.session_state[k]
                 else:
-                    st.error(f"❌ {message}")
-                    if warnings: st.warning(warnings)
+                    st.error(f"❌ {warning}")
+
+with tab5:
+    st.subheader("🚀 Review, Edit & Publish")
+    
+    if "generated_draft_grids" not in st.session_state:
+        st.info("No draft generated yet. Go to **Tab 4** to generate the base schedule first.")
+    else:
+        st.markdown("Make any last-minute human adjustments here. When ready, click **Approve & Publish** to lock in the stats and download the official Excel file.")
+        
+        edited_final_drafts = {}
+        for w_idx in range(0, len(ui_roster_dates) // 7):
+            st.markdown(f"#### Draft Week {w_idx + 1}")
+            week_dates = ui_roster_dates[w_idx*7 : (w_idx*7)+7]
+            col_config = {"Shift": st.column_config.TextColumn("Shift", disabled=True)}
+            for d in week_dates:
+                d_str = d.strftime("%Y-%m-%d")
+                display_name = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
+                col_config[d_str] = st.column_config.SelectboxColumn(display_name, options=[""] + current_doctors)
+                
+            edited_final_drafts[w_idx] = st.data_editor(
+                st.session_state.generated_draft_grids[w_idx], 
+                column_config=col_config, 
+                hide_index=True, 
+                use_container_width=True,
+                key=f"draft_editor_week_{w_idx}_{selected_year}_{selected_month}"
+            )
+            st.markdown("---")
+
+        if st.button("🚀 APPROVE & PUBLISH (Save Month Stats)", use_container_width=True, type="primary"):
+            with st.spinner("Compiling Excel and updating ledgers..."):
+                doc_colors_ui = {}
+                for idx, row in edited_docs_df.iterrows():
+                    doc = str(row["Doctor"]).strip().upper()
+                    col = row.get("Color", "White")
+                    doc_colors_ui[doc] = COLOR_PALETTE.get(col, "#FFFFFF")
+
+                ferie_dict, desiderate_dict, leave_list = {}, {}, []
+                for idx, row in edited_absences_df.iterrows():
+                    doc = str(row["Doctor"]).strip().upper()
+                    if not doc: continue
+                    ferie = row.get("Ferie (YYYY-MM-DD)", "")
+                    if pd.notna(ferie) and ferie: ferie_dict[doc] = [d.strip() for d in str(ferie).split(",") if d.strip()]
+                    des = row.get("Desiderate (YYYY-MM-DD)", "")
+                    if pd.notna(des) and des: desiderate_dict[doc] = [d.strip() for d in str(des).split(",") if d.strip()]
+                    l_w = row.get("Leave Weeks (Type the Monday)", "")
+                    if pd.notna(l_w) and l_w: 
+                        for d_str in [d.strip() for d in str(l_w).split(",") if d.strip()]: leave_list.append((doc, d_str))
+
+                excel_data = process_and_export_schedule(
+                    edited_weekly_grids=edited_final_drafts, year=selected_year, month=selected_month, 
+                    conditional_or_days=or_days_formatted, manual_festivities=[],
+                    outpatient_configs=outpatient_setup, ferie=ferie_dict, leave_weeks=leave_list, desiderate=desiderate_dict, 
+                    doctor_colors=doc_colors_ui, doctors_list=current_doctors
+                )
+                
+                st.success("✅ Schedule finalized! The Monthly Ledger has been updated.")
+                timestamp = datetime.datetime.now().strftime("%H%M%S")
+                dl_filename = f'OFFICIAL_cardiology_schedule_{selected_year}_{selected_month}_{timestamp}.xlsx'
+                
+                st.download_button(
+                    label="📥 Download Official Excel Schedule",
+                    data=excel_data,
+                    file_name=dl_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
