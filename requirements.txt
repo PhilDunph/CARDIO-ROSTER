@@ -3,3 +3,4 @@ pandas
 ortools
 holidays
 xlsxwriter
+PyGithub
