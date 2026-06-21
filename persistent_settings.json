@@ -1,1 +1,109 @@
-
+{
+    "clinics": [
+        "PACEMAKER",
+        "DIMESSI",
+        "SCOMPENSO"
+    ],
+    "doctors": [
+        {
+            "Doctor": "BURGAZZI",
+            "Private Practice (Afternoon)": "",
+            "Color": "White",
+            "Ward Preferred": true,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": false,
+            "SCOMPENSO": false
+        },
+        {
+            "Doctor": "CACCAMO",
+            "Private Practice (Afternoon)": "",
+            "Color": "White",
+            "Ward Preferred": false,
+            "OR Capable": true,
+            "PACEMAKER": false,
+            "DIMESSI": false,
+            "SCOMPENSO": false
+        },
+        {
+            "Doctor": "CARDINALI",
+            "Private Practice (Afternoon)": "",
+            "Color": "White",
+            "Ward Preferred": false,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": false,
+            "SCOMPENSO": false
+        },
+        {
+            "Doctor": "CICCARELLI",
+            "Private Practice (Afternoon)": "",
+            "Color": "White",
+            "Ward Preferred": false,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": false,
+            "SCOMPENSO": false
+        },
+        {
+            "Doctor": "CICCHIRILLO",
+            "Private Practice (Afternoon)": "",
+            "Color": "White",
+            "Ward Preferred": false,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": false,
+            "SCOMPENSO": false
+        },
+        {
+            "Doctor": "FLORI",
+            "Private Practice (Afternoon)": "",
+            "Color": "White",
+            "Ward Preferred": false,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": false,
+            "SCOMPENSO": false
+        },
+        {
+            "Doctor": "FINIZIO",
+            "Private Practice (Afternoon)": "",
+            "Color": "White",
+            "Ward Preferred": false,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": false,
+            "SCOMPENSO": false
+        },
+        {
+            "Doctor": "NUCCI",
+            "Private Practice (Afternoon)": "",
+            "Color": "White",
+            "Ward Preferred": false,
+            "OR Capable": true,
+            "PACEMAKER": false,
+            "DIMESSI": false,
+            "SCOMPENSO": false
+        },
+        {
+            "Doctor": "ROBERTI",
+            "Private Practice (Afternoon)": "",
+            "Color": "White",
+            "Ward Preferred": true,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": false,
+            "SCOMPENSO": false
+        },
+        {
+            "Doctor": "GAUDENZI",
+            "Private Practice (Afternoon)": "",
+            "Color": "White",
+            "Ward Preferred": false,
+            "OR Capable": false,
+            "PACEMAKER": false,
+            "DIMESSI": false,
+            "SCOMPENSO": false
+        }
+    ]
+}
