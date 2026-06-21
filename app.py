@@ -51,10 +51,35 @@ def load_persistent_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+                
+            # Smart Upgrader: If we have the new format, return it.
+            if "docs_base" in data and "capabilities" in data:
+                return data
+                
+            # Smart Upgrader: If we have the OLD format, translate it on the fly!
+            elif "doctors" in data:
+                docs_base = []
+                caps = []
+                for doc in data["doctors"]:
+                    docs_base.append({
+                        "Doctor": doc.get("Doctor", ""),
+                        "Private Practice (Afternoon)": doc.get("Private Practice (Afternoon)", ""),
+                        "Color": doc.get("Color", "White")
+                    })
+                    cap_row = {
+                        "Doctor": doc.get("Doctor", ""),
+                        "Ward Preferred": doc.get("Ward Preferred", False),
+                        "OR Capable": doc.get("OR Capable", False)
+                    }
+                    for c in data.get("clinics", default_clinics):
+                        cap_row[c] = doc.get(c, False)
+                    caps.append(cap_row)
+                return {"clinics": data.get("clinics", default_clinics), "docs_base": docs_base, "capabilities": caps}
         except Exception:
             pass
             
+    # Default Fallback if no file exists
     docs_base = [{"Doctor": d, "Private Practice (Afternoon)": "", "Color": "White"} for d in default_doctors]
     caps = [{"Doctor": d, "Ward Preferred": d in ["BURGAZZI", "ROBERTI"], "OR Capable": d in ["CACCAMO", "NUCCI"]} for d in default_doctors]
     for c in caps:
@@ -655,7 +680,6 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             night_rep_shifts = ['NIGHT', 'REP_NIGHT']
             if rep_day_open: night_rep_shifts.append('REP_DAY')
 
-            # 🟢 STRUCTURED EXCEL WRITER
             for section_name, section_shifts in [("MATTINA", week_shifts_am), ("POMERIGGIO", week_shifts_pm), ("NOTTE E REPERIBILITÀ", night_rep_shifts)]:
                 worksheet.merge_range(row_cursor, 0, row_cursor, 7, section_name, section_format)
                 row_cursor += 1
@@ -879,7 +903,6 @@ with st.sidebar:
 
     st.session_state.capabilities_df = st.data_editor(st.session_state.capabilities_df, hide_index=True, use_container_width=True)
     
-    # Save the states to persistent memory
     save_persistent_settings(current_clinics, st.session_state.docs_df, st.session_state.capabilities_df)
     
     st.markdown("---")
