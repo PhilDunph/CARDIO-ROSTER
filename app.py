@@ -25,16 +25,12 @@ def push_to_github(file_path, commit_message):
                 content = file.read()
                 
             try:
-                # File exists, update it
                 contents = repo.get_contents(file_path)
                 repo.update_file(contents.path, commit_message, content, contents.sha)
             except:
-                # File doesn't exist yet, create it
                 repo.create_file(file_path, commit_message, content)
         except Exception as e:
-            st.toast(f"⚠️ Could not sync to cloud: {e}")
-    else:
-        pass # Running locally on your PC, no cloud sync needed.
+            st.toast(f"⚠️ Could not sync {file_path} to cloud: {e}")
 
 # ==========================================
 # 1. PERSISTENT SETTINGS DATABASE
@@ -60,30 +56,21 @@ def load_persistent_settings():
         except Exception:
             pass
             
-    docs = []
-    for d in default_doctors:
-        doc_data = {
-            "Doctor": d,
-            "Private Practice (Afternoon)": "",
-            "Color": "White",
-            "Ward Preferred": d in ["BURGAZZI", "ROBERTI"],
-            "OR Capable": d in ["CACCAMO", "NUCCI"]
-        }
-        for c in default_clinics:
-            doc_data[c] = False
-        docs.append(doc_data)
+    docs_base = [{"Doctor": d, "Private Practice (Afternoon)": "", "Color": "White"} for d in default_doctors]
+    caps = [{"Doctor": d, "Ward Preferred": d in ["BURGAZZI", "ROBERTI"], "OR Capable": d in ["CACCAMO", "NUCCI"]} for d in default_doctors]
+    for c in caps:
+        for clin in default_clinics: c[clin] = False
         
-    return {"clinics": default_clinics, "doctors": docs}
+    return {"clinics": default_clinics, "docs_base": docs_base, "capabilities": caps}
 
-def save_persistent_settings(clinics_list, docs_df):
+def save_persistent_settings(clinics_list, docs_df, cap_df):
     data = {
         "clinics": clinics_list,
-        "doctors": docs_df.fillna("").to_dict('records')
+        "docs_base": docs_df.fillna("").to_dict('records'),
+        "capabilities": cap_df.fillna(False).to_dict('records')
     }
     with open(SETTINGS_FILE, 'w') as f:
         json.dump(data, f, indent=4)
-    # Trigger Cloud Sync
-    push_to_github(SETTINGS_FILE, "Auto-sync: Updated Doctor capabilities/settings")
 
 
 # ==========================================
@@ -125,7 +112,6 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
                                  commit_to_history=False, debug_mode=False):
     
     doctors = doctors_list
-    
     roster_dates = get_roster_dates(year, month)
     num_days = len(roster_dates)
     date_to_idx = {d.strftime("%Y-%m-%d"): idx for idx, d in enumerate(roster_dates)}
@@ -208,7 +194,7 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             
         available_bodies = len(doctors) - unavailable
         if available_bodies < min_bodies_needed:
-            return False, None, "", f"🛑 CRITICAL STAFFING SHORTAGE ON {current_date_str}: You only have {available_bodies} doctors available, but you need at least {min_bodies_needed} to legally run the department. Remove some Ferie/Desiderate on this day."
+            return False, None, "", f"🛑 CRITICAL STAFFING SHORTAGE ON {current_date_str}: You only have {available_bodies} doctors available, but you need at least {min_bodies_needed} to legally run the department."
 
     shifts = ['WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT']
     for out_type in outpatient_configs.keys(): shifts.append(f'OUT_{out_type}_AM')
@@ -340,7 +326,6 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             else:
                 if day_idx < num_days - 1:
                     is_pre_night = work[(d, day_idx + 1, 'NIGHT')]
-                    
                     model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 2)
                     if day_idx not in sunday_equivalent_days:
                         model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 1).OnlyEnforceIf(is_pre_night.Not())
@@ -352,7 +337,6 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
                     ideal_pre_night = model.NewBoolVar('')
                     model.AddBoolAnd([is_pre_night, pre_night_double, work[(d, day_idx, 'REP_NIGHT')]]).OnlyEnforceIf(ideal_pre_night)
                     objective_terms.append(1000 * ideal_pre_night)
-                    
                 else:
                     if day_idx not in sunday_equivalent_days: model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 1)
                     else: model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 2)
@@ -792,15 +776,12 @@ st.set_page_config(page_title="Cardiology Scheduler", page_icon="🩺", layout="
 if "app_initialized" not in st.session_state:
     settings = load_persistent_settings()
     st.session_state.clinics_df = pd.DataFrame({"Clinic Name": settings["clinics"]})
-    st.session_state.docs_df = pd.DataFrame(settings["doctors"])
+    st.session_state.docs_df = pd.DataFrame(settings["docs_base"]) 
+    st.session_state.capabilities_df = pd.DataFrame(settings["capabilities"]) 
     st.session_state.absences_df = pd.DataFrame(columns=["Doctor", "Ferie (YYYY-MM-DD)", "Desiderate (YYYY-MM-DD)", "Leave Weeks (Type the Monday)"])
     st.session_state.app_initialized = True
 
 current_clinics = [str(c).strip().upper().replace(" ", "_") for c in st.session_state.clinics_df["Clinic Name"].dropna().unique() if str(c).strip()]
-
-for c in current_clinics:
-    if c not in st.session_state.docs_df.columns:
-        st.session_state.docs_df[c] = False
 
 st.title("🩺 Cardiology Shift Scheduler")
 st.markdown("Automated constraints-based roster generation.")
@@ -812,33 +793,56 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("👨‍⚕️ Persistent Doctor Settings")
-    st.markdown("Add/Remove doctors, set their colors, capabilities, and private practice afternoons here. This is saved permanently.")
     
     doc_col_config = {
         "Doctor": st.column_config.TextColumn("Doctor Name", required=True),
         "Private Practice (Afternoon)": st.column_config.SelectboxColumn(
             "Private Practice", options=["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
         ),
-        "Color": st.column_config.SelectboxColumn(
-            "Color", options=list(COLOR_PALETTE.keys())
-        )
+        "Color": st.column_config.SelectboxColumn("Color", options=list(COLOR_PALETTE.keys()))
     }
     
-    edited_docs_df = st.data_editor(
+    # Render without Key/Copy to avoid Double-Click bugs
+    st.session_state.docs_df = st.data_editor(
         st.session_state.docs_df,
         num_rows="dynamic",
         column_config=doc_col_config,
-        hide_index=True, use_container_width=True, key="docs_settings_editor"
+        hide_index=True, use_container_width=True
     )
-    st.session_state.docs_df = edited_docs_df
     
-    save_persistent_settings(current_clinics, edited_docs_df)
+    current_doctors = [str(d).strip().upper() for d in st.session_state.docs_df["Doctor"].dropna().unique() if str(d).strip()]
+    
+    st.markdown("---")
+    st.header("👨‍⚕️ Doctor Capabilities")
+    
+    cap_cols = ["Doctor", "Ward Preferred", "OR Capable"] + current_clinics
+    
+    # Safely synchronize capabilities without destroying memory references
+    needs_cap_update = False
+    if list(st.session_state.capabilities_df.columns) != cap_cols: needs_cap_update = True
+    if set(st.session_state.capabilities_df["Doctor"].tolist()) != set(current_doctors): needs_cap_update = True
+    
+    if needs_cap_update:
+        existing_docs = st.session_state.capabilities_df["Doctor"].tolist()
+        for d in current_doctors:
+            if d not in existing_docs:
+                new_row = {c: False for c in cap_cols}
+                new_row["Doctor"] = d
+                st.session_state.capabilities_df.loc[len(st.session_state.capabilities_df)] = new_row
+        st.session_state.capabilities_df = st.session_state.capabilities_df[st.session_state.capabilities_df["Doctor"].isin(current_doctors)]
+        for c in cap_cols:
+            if c not in st.session_state.capabilities_df.columns: st.session_state.capabilities_df[c] = False
+        st.session_state.capabilities_df = st.session_state.capabilities_df[cap_cols].reset_index(drop=True)
+
+    st.session_state.capabilities_df = st.data_editor(st.session_state.capabilities_df, hide_index=True, use_container_width=True)
+    
+    # Save the states to persistent memory
+    save_persistent_settings(current_clinics, st.session_state.docs_df, st.session_state.capabilities_df)
     
     st.markdown("---")
     st.header("🛠️ Troubleshooter")
     debug_toggle = st.checkbox("🚨 Enable Emergency Debug Mode", help="Ignores all equity rules to force a schedule.")
 
-current_doctors = [str(d).strip().upper() for d in edited_docs_df["Doctor"].dropna().unique() if str(d).strip()]
 ui_roster_dates = get_roster_dates(selected_year, selected_month)
 
 tab1, tab2, tab3, tab4 = st.tabs(["📝 Absences (Ferie/Leave)", "🔒 Forced Shifts", "🏥 OR & Outpatient Clinics", "🚀 Generate Schedule"])
@@ -848,64 +852,59 @@ with tab1:
     st.markdown("Type the dates. Multiple dates must be separated by commas (e.g. `2026-07-04, 2026-07-05`).")
     
     abs_docs = st.session_state.absences_df["Doctor"].tolist()
-    for d in current_doctors:
-        if d not in abs_docs:
-            st.session_state.absences_df.loc[len(st.session_state.absences_df)] = [d, "", "", ""]
-            
-    st.session_state.absences_df = st.session_state.absences_df[st.session_state.absences_df["Doctor"].isin(current_doctors)]
+    if set(abs_docs) != set(current_doctors):
+        for d in current_doctors:
+            if d not in abs_docs:
+                st.session_state.absences_df.loc[len(st.session_state.absences_df)] = [d, "", "", ""]
+        st.session_state.absences_df = st.session_state.absences_df[st.session_state.absences_df["Doctor"].isin(current_doctors)].reset_index(drop=True)
     
-    edited_absences_df = st.data_editor(
+    st.session_state.absences_df = st.data_editor(
         st.session_state.absences_df,
-        column_config={
-            "Doctor": st.column_config.TextColumn("Doctor Name", disabled=True),
-        },
-        hide_index=True, use_container_width=True, key="absences_editor"
+        column_config={"Doctor": st.column_config.TextColumn("Doctor Name", disabled=True)},
+        hide_index=True, use_container_width=True
     )
-    st.session_state.absences_df = edited_absences_df
 
 with tab2:
     st.subheader("Visual Override Grid")
     st.markdown("Click on any empty cell to forcefully lock a specific doctor into that shift.")
-    st.warning("⚠️ **Warning:** If you force a shift that breaks a hard rule, the algorithm will fail.")
     
     if st.session_state.get("current_ym") != f"{selected_year}-{selected_month}":
         st.session_state["current_ym"] = f"{selected_year}-{selected_month}"
         for k in list(st.session_state.keys()):
-            if k.startswith("grid_week_") or k.startswith("editor_grid_week_"):
+            if k.startswith("grid_week_"):
                 del st.session_state[k]
 
     dynamic_shift_options = ['WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT'] + [f'OUT_{c}_AM' for c in current_clinics]
 
-    edited_weekly_grids = {}
     for w_idx, week_start_idx in enumerate(range(0, len(ui_roster_dates), 7)):
         st.markdown(f"#### Week {w_idx + 1}")
         week_dates = ui_roster_dates[week_start_idx : week_start_idx + 7]
         col_names = [d.strftime("%Y-%m-%d") for d in week_dates]
-        
         state_key = f"grid_week_{w_idx}"
         
         if state_key not in st.session_state:
             init_dict = {"Shift": dynamic_shift_options}
-            for c in col_names:
-                init_dict[c] = [""] * len(dynamic_shift_options)
+            for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
+            st.session_state[state_key] = pd.DataFrame(init_dict)
+            
+        # Re-sync shifts if new clinics added
+        if list(st.session_state[state_key]["Shift"]) != dynamic_shift_options:
+            init_dict = {"Shift": dynamic_shift_options}
+            for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
             st.session_state[state_key] = pd.DataFrame(init_dict)
             
         col_config = {"Shift": st.column_config.TextColumn("Shift", disabled=True)}
         for d in week_dates:
             d_str = d.strftime("%Y-%m-%d")
             display_name = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
-            col_config[d_str] = st.column_config.SelectboxColumn(
-                display_name, options=[""] + current_doctors
-            )
+            col_config[d_str] = st.column_config.SelectboxColumn(display_name, options=[""] + current_doctors)
             
-        edited_week_df = st.data_editor(
+        st.session_state[state_key] = st.data_editor(
             st.session_state[state_key], 
             column_config=col_config, 
             hide_index=True, 
-            key=f"editor_{state_key}",
             use_container_width=True
         )
-        edited_weekly_grids[w_idx] = edited_week_df
         st.markdown("---")
 
 with tab3:
@@ -923,32 +922,30 @@ with tab3:
                                    key=f"or_dates_{selected_year}_{selected_month}")
     or_days_formatted = [d.strftime("%Y-%m-%d") for d in or_days_input]
     
-    or_docs = edited_docs_df[edited_docs_df["OR Capable"] == True]["Doctor"].dropna().tolist() if "OR Capable" in edited_docs_df.columns else []
+    or_docs = st.session_state.capabilities_df[st.session_state.capabilities_df["OR Capable"] == True]["Doctor"].dropna().tolist() if "OR Capable" in st.session_state.capabilities_df.columns else []
     st.caption(f"**OR Capable Doctors (from Sidebar):** {', '.join(or_docs) if or_docs else 'None'}")
 
     st.markdown("---")
     st.subheader("Manage Outpatient Clinics")
     st.markdown("##### 1. Define Clinics")
-    edited_clinics_df = st.data_editor(
+    
+    st.session_state.clinics_df = st.data_editor(
         st.session_state.clinics_df, 
         num_rows="dynamic",
         column_config={"Clinic Name": st.column_config.TextColumn("Clinic Name", required=True)},
         use_container_width=True,
-        hide_index=True, key="clinics_editor"
+        hide_index=True
     )
-    st.session_state.clinics_df = edited_clinics_df
-    
-    active_clinics = [str(c).strip().upper().replace(" ", "_") for c in edited_clinics_df["Clinic Name"].dropna().unique() if str(c).strip()]
-    save_persistent_settings(active_clinics, edited_docs_df)
+    current_clinics = [str(c).strip().upper().replace(" ", "_") for c in st.session_state.clinics_df["Clinic Name"].dropna().unique() if str(c).strip()]
     
     st.markdown("##### 2. Schedule Clinics")
     
     outpatient_setup = {}
-    if active_clinics:
-        for clinic in active_clinics:
+    if current_clinics:
+        for clinic in current_clinics:
             with st.expander(f"🩺 {clinic.replace('_', ' ')} Schedule", expanded=True):
-                if clinic in edited_docs_df.columns:
-                    capable = edited_docs_df[edited_docs_df[clinic] == True]["Doctor"].dropna().tolist()
+                if clinic in st.session_state.capabilities_df.columns:
+                    capable = st.session_state.capabilities_df[st.session_state.capabilities_df[clinic] == True]["Doctor"].dropna().tolist()
                 else:
                     capable = []
                     
@@ -967,7 +964,6 @@ with tab3:
 
 with tab4:
     st.subheader("Generate File")
-    st.info("💡 **Best Practice:** Run simulations until you are happy with the result. Only click 'Approve & Publish' when the schedule is final to avoid inflating the historical data.")
     
     col_sim, col_pub = st.columns(2)
     
@@ -987,31 +983,24 @@ with tab4:
                 pp_dict = {}
                 doc_colors_ui = {}
                 doc_capabilities_dict = {}
-                ward_preferred = []
-                or_capable = []
 
-                for idx, row in edited_docs_df.iterrows():
+                for idx, row in st.session_state.docs_df.iterrows():
                     doc = str(row["Doctor"]).strip().upper()
                     if not doc: continue
-                    
                     pp = row.get("Private Practice (Afternoon)", "")
                     if pd.notna(pp) and pp: pp_dict[doc] = pp
-                    
                     col = row.get("Color", "White")
                     doc_colors_ui[doc] = COLOR_PALETTE.get(col, "#FFFFFF")
-                    
-                    if row.get("Ward Preferred", False): ward_preferred.append(doc)
-                    if row.get("OR Capable", False): or_capable.append(doc)
-                    
-                    doc_capabilities_dict[doc] = {c: bool(row.get(c, False)) for c in active_clinics}
-                    doc_capabilities_dict[doc]["Ward Preferred"] = bool(row.get("Ward Preferred", False))
-                    doc_capabilities_dict[doc]["OR Capable"] = bool(row.get("OR Capable", False))
+
+                for idx, row in st.session_state.capabilities_df.iterrows():
+                    doc = row["Doctor"]
+                    doc_capabilities_dict[doc] = {col: bool(row[col]) for col in cap_cols if col != "Doctor"}
 
                 ferie_dict = {}
                 desiderate_dict = {}
                 leave_list = []
 
-                for idx, row in edited_absences_df.iterrows():
+                for idx, row in st.session_state.absences_df.iterrows():
                     doc = str(row["Doctor"]).strip().upper()
                     if not doc: continue
                     
@@ -1031,14 +1020,17 @@ with tab4:
                         for d_str in dates: leave_list.append((doc, d_str))
 
                 manual_shifts = []
-                for w_idx, df_w in edited_weekly_grids.items():
-                    for idx, row in df_w.iterrows():
-                        shift_val = str(row["Shift"]).strip().upper()
-                        for d in ui_roster_dates[w_idx*7 : (w_idx*7)+7]:
-                            d_str = d.strftime("%Y-%m-%d")
-                            doc = row.get(d_str, "")
-                            if pd.notna(doc) and str(doc).strip():
-                                manual_shifts.append((str(doc).strip().upper(), d_str, shift_val))
+                for w_idx in range(0, len(ui_roster_dates) // 7):
+                    state_key = f"grid_week_{w_idx}"
+                    if state_key in st.session_state:
+                        df_w = st.session_state[state_key]
+                        for idx, row in df_w.iterrows():
+                            shift_val = str(row["Shift"]).strip().upper()
+                            for d in ui_roster_dates[w_idx*7 : (w_idx*7)+7]:
+                                d_str = d.strftime("%Y-%m-%d")
+                                doc = row.get(d_str, "")
+                                if pd.notna(doc) and str(doc).strip():
+                                    manual_shifts.append((str(doc).strip().upper(), d_str, shift_val))
 
                 manual_festivities = []
 
@@ -1069,8 +1061,3 @@ with tab4:
                 else:
                     st.error(f"❌ {message}")
                     if warnings: st.warning(warnings)
-                    
-                    if not debug_toggle:
-                        st.info("💡 **Tip:** Try checking 'Enable Emergency Debug Mode' in the left sidebar and running the simulation again. If it works, it means your vacations are too heavily grouped to allow for fair shift distribution.")
-                    else:
-                        st.info("💡 **Tip:** Even with Emergency Debug Mode enabled, the schedule failed. You likely have conflicting Forced Shifts, or too many doctors on vacation to cover the basic required shifts.")
