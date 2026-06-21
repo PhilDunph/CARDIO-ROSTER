@@ -1,92 +1,102 @@
 {
     "BURGAZZI": {
-        "nights": 4,
-        "doubles": 4,
-        "saturdays": 4,
-        "sundays": 3,
-        "holidays": 0,
-        "super_holidays": 0,
-        "golden_weekends": 3
+        "nights": 7.0,
+        "doubles": 7.0,
+        "saturdays": 6.0,
+        "sundays": 5.0,
+        "holidays": 1.0,
+        "super_holidays": 0.5,
+        "golden_weekends": 5.0,
+        "reps": 4.0
     },
     "CACCAMO": {
-        "nights": 10,
-        "doubles": 10,
-        "saturdays": 4,
-        "sundays": 1,
-        "holidays": 0,
-        "super_holidays": 0,
-        "golden_weekends": 3
+        "nights": 14.0,
+        "doubles": 14.0,
+        "saturdays": 4.0,
+        "sundays": 1.0,
+        "holidays": 0.0,
+        "super_holidays": 0.0,
+        "golden_weekends": 6.0,
+        "reps": 4.0
     },
     "CARDINALI": {
-        "nights": 9,
-        "doubles": 9,
-        "saturdays": 3,
-        "sundays": 2,
-        "holidays": 0,
-        "super_holidays": 0,
-        "golden_weekends": 4
+        "nights": 15.0,
+        "doubles": 14.0,
+        "saturdays": 4.0,
+        "sundays": 3.0,
+        "holidays": 0.0,
+        "super_holidays": 0.0,
+        "golden_weekends": 5.0,
+        "reps": 6.0
     },
     "CICCARELLI": {
-        "nights": 8,
-        "doubles": 8,
-        "saturdays": 2,
-        "sundays": 2,
-        "holidays": 0,
-        "super_holidays": 0,
-        "golden_weekends": 4
+        "nights": 12.0,
+        "doubles": 12.0,
+        "saturdays": 4.0,
+        "sundays": 4.0,
+        "holidays": 0.0,
+        "super_holidays": 1.0,
+        "golden_weekends": 5.0,
+        "reps": 4.0
     },
     "CICCHIRILLO": {
-        "nights": 7,
-        "doubles": 6,
-        "saturdays": 3,
-        "sundays": 3,
-        "holidays": 0,
-        "super_holidays": 0,
-        "golden_weekends": 3
+        "nights": 10.0,
+        "doubles": 9.0,
+        "saturdays": 4.0,
+        "sundays": 4.5,
+        "holidays": 0.0,
+        "super_holidays": 0.0,
+        "golden_weekends": 5.0,
+        "reps": 3.0
     },
     "FLORI": {
-        "nights": 7,
-        "doubles": 7,
-        "saturdays": 3,
-        "sundays": 2,
-        "holidays": 0,
-        "super_holidays": 0,
-        "golden_weekends": 4
+        "nights": 12.0,
+        "doubles": 12.0,
+        "saturdays": 3.0,
+        "sundays": 2.0,
+        "holidays": 1.0,
+        "super_holidays": 1.0,
+        "golden_weekends": 6.0,
+        "reps": 8.0
     },
     "FINIZIO": {
-        "nights": 0,
-        "doubles": 0,
-        "saturdays": 4,
-        "sundays": 1,
-        "holidays": 0,
-        "super_holidays": 0,
-        "golden_weekends": 4
+        "nights": 0.0,
+        "doubles": 0.0,
+        "saturdays": 5.0,
+        "sundays": 1.5,
+        "holidays": 0.0,
+        "super_holidays": 0.0,
+        "golden_weekends": 5.0,
+        "reps": 2.0
     },
     "NUCCI": {
-        "nights": 7,
-        "doubles": 7,
-        "saturdays": 2,
-        "sundays": 0,
-        "holidays": 0,
-        "super_holidays": 0,
-        "golden_weekends": 5
+        "nights": 12.0,
+        "doubles": 12.0,
+        "saturdays": 6.0,
+        "sundays": 2.0,
+        "holidays": 0.0,
+        "super_holidays": 1.0,
+        "golden_weekends": 6.0,
+        "reps": 5.0
     },
     "ROBERTI": {
-        "nights": 4,
-        "doubles": 4,
-        "saturdays": 4,
-        "sundays": 3,
-        "holidays": 0,
-        "super_holidays": 0,
-        "golden_weekends": 3
+        "nights": 9.0,
+        "doubles": 9.0,
+        "saturdays": 5.0,
+        "sundays": 4.0,
+        "holidays": 1.0,
+        "super_holidays": 2.0,
+        "golden_weekends": 7.0,
+        "reps": 5.0
     },
     "GAUDENZI": {
-        "nights": 0,
-        "doubles": 0,
-        "saturdays": 3,
-        "sundays": 0,
-        "holidays": 0,
-        "super_holidays": 0,
-        "golden_weekends": 5
+        "nights": 0.0,
+        "doubles": 3.0,
+        "saturdays": 6.0,
+        "sundays": 0.0,
+        "holidays": 0.0,
+        "super_holidays": 0.0,
+        "golden_weekends": 7.0,
+        "reps": 0.0
     }
 }
