@@ -15,7 +15,6 @@ from github import Github
 # 0. GITHUB CLOUD SYNC ENGINE
 # ==========================================
 def push_to_github(file_path, commit_message):
-    """Silently pushes local json updates to GitHub if running on Streamlit Cloud."""
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
         try:
             g = Github(st.secrets["GITHUB_TOKEN"])
@@ -72,7 +71,6 @@ def save_persistent_settings(clinics_list, docs_df, cap_df):
     with open(SETTINGS_FILE, 'w') as f:
         json.dump(data, f, indent=4)
 
-
 # ==========================================
 # 2. THE MATH ENGINE (Core Logic)
 # ==========================================
@@ -105,6 +103,36 @@ def get_dates_for_weekdays(year, month, weekdays):
         if dt.weekday() in target_days:
             dates.append(dt)
     return dates
+
+def get_master_name(s):
+    master_display = {
+        'WARD_AM': 'REPARTO',
+        'URG_AM': 'URGENZE',
+        'OR_AM': 'SALA',
+        'WARD_PM': 'REPARTO',
+        'URG_PM': 'URGENZE',
+        'NIGHT': 'NOTTE',
+        'REP_NIGHT': 'REPERIBILE NOTTE',
+        'REP_DAY': 'REPERIBILE GIORNO MATTINA E POMERIGGIO'
+    }
+    if s in master_display: return master_display[s]
+    if s.startswith('OUT_'): return s.replace('OUT_', 'AMB. ').replace('_AM', '').replace('_', ' ')
+    return s
+
+def get_indiv_name(s):
+    indiv_display = {
+        'WARD_AM': 'REPARTO MATTINA',
+        'URG_AM': 'URGENZE MATTINA',
+        'OR_AM': 'SALA',
+        'WARD_PM': 'REPARTO POMERIGGIO',
+        'URG_PM': 'URGENZE POMERIGGIO',
+        'NIGHT': 'NOTTE',
+        'REP_NIGHT': 'REPERIBILE NOTTE',
+        'REP_DAY': 'REPERIBILE GIORNO (MATTINA E POMERIGGIO)'
+    }
+    if s in indiv_display: return indiv_display[s]
+    if s.startswith('OUT_'): return s.replace('OUT_', 'AMB. ').replace('_AM', '').replace('_', ' ')
+    return s
 
 def generate_cardiology_schedule(year, month, conditional_or_days, manual_festivities, manual_assignments,
                                  doctor_capabilities, outpatient_configs,
@@ -582,6 +610,7 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
         worksheet = workbook.add_worksheet('Master Schedule')
         
         header_format = workbook.add_format({'bold': True, 'bg_color': '#E8E8E8', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+        section_format = workbook.add_format({'bold': True, 'bg_color': '#4F4F4F', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
         shift_format = workbook.add_format({'bold': True, 'bg_color': '#F5F5F5', 'border': 1, 'align': 'left'})
         empty_border = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
         gray_dash_format = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_color': '#D3D3D3'})
@@ -605,7 +634,6 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             
             week_shifts_am = ['WARD_AM', 'URG_AM']
             week_shifts_pm = ['WARD_PM', 'URG_PM']
-            week_shifts_night = ['REP_NIGHT', 'NIGHT']
             
             or_open = False
             outpatient_open = {out_type: False for out_type in outpatient_configs.keys()}
@@ -613,6 +641,7 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             
             for i in range(7):
                 day_idx = week_start_idx + i
+                if day_idx >= num_days: continue
                 d_str = roster_dates[day_idx].strftime("%Y-%m-%d")
                 if day_idx in sunday_equivalent_days: rep_day_open = True
                 if d_str in conditional_or_days: or_open = True
@@ -622,30 +651,44 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             if or_open: week_shifts_am.append('OR_AM')
             for out_type, is_open in outpatient_open.items():
                 if is_open: week_shifts_am.append(f'OUT_{out_type}_AM')
-
-            ordered_shifts_this_week = week_shifts_am + week_shifts_pm
-            if rep_day_open: ordered_shifts_this_week.append('REP_DAY')
-            ordered_shifts_this_week.extend(week_shifts_night)
             
-            for s in ordered_shifts_this_week:
-                worksheet.write(row_cursor, 0, s.replace('_', ' '), shift_format)
-                for i in range(7):
-                    day_idx = week_start_idx + i
-                    assigned_doc = ""
-                    for d in doctors:
-                        if solver.Value(work[(d, day_idx, s)]) == 1:
-                            assigned_doc = d
-                    
-                    if assigned_doc:
-                        worksheet.write(row_cursor, i + 1, assigned_doc, doc_formats[assigned_doc])
-                    else:
-                        if s == 'REP_DAY' and day_idx not in sunday_equivalent_days:
-                            worksheet.write(row_cursor, i + 1, "-", gray_dash_format)
-                        else:
-                            worksheet.write(row_cursor, i + 1, "", empty_border)
+            night_rep_shifts = ['NIGHT', 'REP_NIGHT']
+            if rep_day_open: night_rep_shifts.append('REP_DAY')
+
+            # 🟢 STRUCTURED EXCEL WRITER
+            for section_name, section_shifts in [("MATTINA", week_shifts_am), ("POMERIGGIO", week_shifts_pm), ("NOTTE E REPERIBILITÀ", night_rep_shifts)]:
+                worksheet.merge_range(row_cursor, 0, row_cursor, 7, section_name, section_format)
                 row_cursor += 1
-                
-            row_cursor += 2
+                for s in section_shifts:
+                    worksheet.write(row_cursor, 0, get_master_name(s), shift_format)
+                    for i in range(7):
+                        day_idx = week_start_idx + i
+                        if day_idx >= num_days:
+                            worksheet.write(row_cursor, i + 1, "", empty_border)
+                            continue
+                        
+                        assigned_doc = ""
+                        for d in doctors:
+                            if solver.Value(work[(d, day_idx, s)]) == 1:
+                                assigned_doc = d
+                        
+                        if assigned_doc:
+                            worksheet.write(row_cursor, i + 1, assigned_doc, doc_formats[assigned_doc])
+                        else:
+                            is_active_today = True
+                            d_str = roster_dates[day_idx].strftime("%Y-%m-%d")
+                            if s == 'OR_AM' and d_str not in conditional_or_days: is_active_today = False
+                            if s == 'REP_DAY' and day_idx not in sunday_equivalent_days: is_active_today = False
+                            if s.startswith('OUT_'):
+                                c_name = s.replace('OUT_', '').replace('_AM', '')
+                                if d_str not in outpatient_configs.get(c_name, {}).get('days', []): is_active_today = False
+                            
+                            if is_active_today:
+                                worksheet.write(row_cursor, i + 1, "", empty_border)
+                            else:
+                                worksheet.write(row_cursor, i + 1, "-", gray_dash_format)
+                    row_cursor += 1
+            row_cursor += 1
 
         # --- THE DASHBOARD ---
         dashboard_header = ['Doctor', 'Proportional Target Hours', 'Actual Monthly Hours', 'Difference (+/-)',
@@ -696,15 +739,16 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
                 doc_sheet.set_row(row_c, 55) 
                 for i in range(7):
                     day_idx = week_start_idx + i
+                    if day_idx >= num_days: continue
                     curr_date = roster_dates[day_idx]
                     
                     my_shifts = []
                     for s in shifts:
                         if solver.Value(work[(doc, day_idx, s)]) == 1:
                             if 'REP' in s:
-                                my_shifts.append("📞 " + s.replace('_', ' '))
+                                my_shifts.append("📞 " + get_indiv_name(s))
                             else:
-                                my_shifts.append(s.replace('_', ' '))
+                                my_shifts.append(get_indiv_name(s))
                             
                     is_holiday_or_weekend = (curr_date.weekday() >= 5 or day_idx in sunday_equivalent_days)
                     
@@ -737,9 +781,10 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             row_c += 1
 
             for s in ['REP_DAY', 'REP_NIGHT']:
-                rep_sheet.write(row_c, 0, s.replace('_', ' '), shift_format)
+                rep_sheet.write(row_c, 0, get_indiv_name(s), shift_format)
                 for i in range(7):
                     day_idx = week_start_idx + i
+                    if day_idx >= num_days: continue
                     assigned_doc = ""
                     for d in doctors:
                         if solver.Value(work[(d, day_idx, s)]) == 1:
@@ -802,7 +847,6 @@ with st.sidebar:
         "Color": st.column_config.SelectboxColumn("Color", options=list(COLOR_PALETTE.keys()))
     }
     
-    # Render without Key/Copy to avoid Double-Click bugs
     st.session_state.docs_df = st.data_editor(
         st.session_state.docs_df,
         num_rows="dynamic",
@@ -817,7 +861,6 @@ with st.sidebar:
     
     cap_cols = ["Doctor", "Ward Preferred", "OR Capable"] + current_clinics
     
-    # Safely synchronize capabilities without destroying memory references
     needs_cap_update = False
     if list(st.session_state.capabilities_df.columns) != cap_cols: needs_cap_update = True
     if set(st.session_state.capabilities_df["Doctor"].tolist()) != set(current_doctors): needs_cap_update = True
@@ -887,7 +930,6 @@ with tab2:
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
             st.session_state[state_key] = pd.DataFrame(init_dict)
             
-        # Re-sync shifts if new clinics added
         if list(st.session_state[state_key]["Shift"]) != dynamic_shift_options:
             init_dict = {"Shift": dynamic_shift_options}
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
