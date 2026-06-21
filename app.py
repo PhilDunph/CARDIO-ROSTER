@@ -15,6 +15,7 @@ from github import Github
 # 0. GITHUB CLOUD SYNC ENGINE
 # ==========================================
 def push_to_github(file_path, commit_message):
+    """Silently pushes local json updates to GitHub if running on Streamlit Cloud."""
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
         try:
             g = Github(st.secrets["GITHUB_TOKEN"])
@@ -53,11 +54,10 @@ def load_persistent_settings():
             with open(SETTINGS_FILE, 'r') as f:
                 data = json.load(f)
                 
-            # Smart Upgrader: If we have the new format, return it.
             if "docs_base" in data and "capabilities" in data:
                 return data
                 
-            # Smart Upgrader: If we have the OLD format, translate it on the fly!
+            # Smart Upgrader for old file formats
             elif "doctors" in data:
                 docs_base = []
                 caps = []
@@ -79,7 +79,6 @@ def load_persistent_settings():
         except Exception:
             pass
             
-    # Default Fallback if no file exists
     docs_base = [{"Doctor": d, "Private Practice (Afternoon)": "", "Color": "White"} for d in default_doctors]
     caps = [{"Doctor": d, "Ward Preferred": d in ["BURGAZZI", "ROBERTI"], "OR Capable": d in ["CACCAMO", "NUCCI"]} for d in default_doctors]
     for c in caps:
@@ -141,7 +140,7 @@ def get_master_name(s):
         'REP_DAY': 'REPERIBILE GIORNO MATTINA E POMERIGGIO'
     }
     if s in master_display: return master_display[s]
-    if s.startswith('OUT_'): return s.replace('OUT_', 'AMB. ').replace('_AM', '').replace('_', ' ')
+    if s.startswith('OUT_'): return s.replace('OUT_', 'AMBULATORIO ').replace('_AM', '').replace('_', ' ')
     return s
 
 def get_indiv_name(s):
@@ -677,10 +676,10 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             for out_type, is_open in outpatient_open.items():
                 if is_open: week_shifts_am.append(f'OUT_{out_type}_AM')
             
-            night_rep_shifts = ['NIGHT', 'REP_NIGHT']
-            if rep_day_open: night_rep_shifts.append('REP_DAY')
+            rep_shifts = ['REP_NIGHT']
+            if rep_day_open: rep_shifts.append('REP_DAY')
 
-            for section_name, section_shifts in [("MATTINA", week_shifts_am), ("POMERIGGIO", week_shifts_pm), ("NOTTE E REPERIBILITÀ", night_rep_shifts)]:
+            for section_name, section_shifts in [("MATTINA", week_shifts_am), ("POMERIGGIO", week_shifts_pm), ("NOTTE", ['NIGHT']), ("REPERIBILITÀ", rep_shifts)]:
                 worksheet.merge_range(row_cursor, 0, row_cursor, 7, section_name, section_format)
                 row_cursor += 1
                 for s in section_shifts:
@@ -829,6 +828,7 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
         debug_msg = " [DEBUG MODE ENABLED: Fairness metrics ignored]" if debug_mode else ""
         if commit_to_history and not debug_mode: 
             with open(COUNTER_FILE, 'w') as f: json.dump(lifetime, f, indent=4)
+            push_to_github(SETTINGS_FILE, "Auto-sync: Settings Updated")
             push_to_github(COUNTER_FILE, "Auto-sync: Official Roster Published (Stats Saved)")
             return True, output.getvalue(), overlap_warning, f"Schedule solved! Block: {roster_dates[0].strftime('%b %d')} to {roster_dates[-1].strftime('%b %d')}. (OFFICIAL: Stats Saved){debug_msg}"
         else:
@@ -837,20 +837,21 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
     else:
         return False, None, overlap_warning, "Constraints are too tight. The algorithm cannot find a mathematically legal schedule. Try using Emergency Debug Mode."
 
+
 # ==========================================
 # 3. THE GRAPHICAL USER INTERFACE (GUI)
 # ==========================================
 st.set_page_config(page_title="Cardiology Scheduler", page_icon="🩺", layout="wide")
 
-if "app_initialized" not in st.session_state:
+if "app_initialized_v2" not in st.session_state:
     settings = load_persistent_settings()
-    st.session_state.clinics_df = pd.DataFrame({"Clinic Name": settings["clinics"]})
-    st.session_state.docs_df = pd.DataFrame(settings["docs_base"]) 
-    st.session_state.capabilities_df = pd.DataFrame(settings["capabilities"]) 
-    st.session_state.absences_df = pd.DataFrame(columns=["Doctor", "Ferie (YYYY-MM-DD)", "Desiderate (YYYY-MM-DD)", "Leave Weeks (Type the Monday)"])
-    st.session_state.app_initialized = True
+    st.session_state.clinics_base_df = pd.DataFrame({"Clinic Name": settings["clinics"]})
+    st.session_state.docs_base_df = pd.DataFrame(settings["docs_base"]) 
+    st.session_state.cap_base_df = pd.DataFrame(settings["capabilities"]) 
+    st.session_state.absences_base_df = pd.DataFrame(columns=["Doctor", "Ferie (YYYY-MM-DD)", "Desiderate (YYYY-MM-DD)", "Leave Weeks (Type the Monday)"])
+    st.session_state.app_initialized_v2 = True
 
-current_clinics = [str(c).strip().upper().replace(" ", "_") for c in st.session_state.clinics_df["Clinic Name"].dropna().unique() if str(c).strip()]
+current_clinics = [str(c).strip().upper().replace(" ", "_") for c in st.session_state.clinics_base_df["Clinic Name"].dropna().unique() if str(c).strip()]
 
 st.title("🩺 Cardiology Shift Scheduler")
 st.markdown("Automated constraints-based roster generation.")
@@ -871,39 +872,37 @@ with st.sidebar:
         "Color": st.column_config.SelectboxColumn("Color", options=list(COLOR_PALETTE.keys()))
     }
     
-    st.session_state.docs_df = st.data_editor(
-        st.session_state.docs_df,
+    edited_docs_df = st.data_editor(
+        st.session_state.docs_base_df,
         num_rows="dynamic",
         column_config=doc_col_config,
         hide_index=True, use_container_width=True
     )
     
-    current_doctors = [str(d).strip().upper() for d in st.session_state.docs_df["Doctor"].dropna().unique() if str(d).strip()]
+    current_doctors = [str(d).strip().upper() for d in edited_docs_df["Doctor"].dropna().unique() if str(d).strip()]
     
     st.markdown("---")
     st.header("👨‍⚕️ Doctor Capabilities")
     
     cap_cols = ["Doctor", "Ward Preferred", "OR Capable"] + current_clinics
+    current_cap_state = st.session_state.get('last_edited_caps', st.session_state.cap_base_df)
     
-    needs_cap_update = False
-    if list(st.session_state.capabilities_df.columns) != cap_cols: needs_cap_update = True
-    if set(st.session_state.capabilities_df["Doctor"].tolist()) != set(current_doctors): needs_cap_update = True
+    if list(current_cap_state.columns) != cap_cols or list(current_cap_state["Doctor"]) != current_doctors:
+        new_df = pd.DataFrame({"Doctor": current_doctors})
+        for c in cap_cols[1:]: new_df[c] = False
+        for idx, row in current_cap_state.iterrows():
+            d = row["Doctor"]
+            if d in current_doctors:
+                for c in cap_cols[1:]:
+                    if c in current_cap_state.columns:
+                        new_df.loc[new_df["Doctor"] == d, c] = row[c]
+        st.session_state.cap_base_df = new_df
+        
+    edited_cap_df = st.data_editor(st.session_state.cap_base_df, hide_index=True, use_container_width=True)
+    st.session_state.last_edited_caps = edited_cap_df
     
-    if needs_cap_update:
-        existing_docs = st.session_state.capabilities_df["Doctor"].tolist()
-        for d in current_doctors:
-            if d not in existing_docs:
-                new_row = {c: False for c in cap_cols}
-                new_row["Doctor"] = d
-                st.session_state.capabilities_df.loc[len(st.session_state.capabilities_df)] = new_row
-        st.session_state.capabilities_df = st.session_state.capabilities_df[st.session_state.capabilities_df["Doctor"].isin(current_doctors)]
-        for c in cap_cols:
-            if c not in st.session_state.capabilities_df.columns: st.session_state.capabilities_df[c] = False
-        st.session_state.capabilities_df = st.session_state.capabilities_df[cap_cols].reset_index(drop=True)
-
-    st.session_state.capabilities_df = st.data_editor(st.session_state.capabilities_df, hide_index=True, use_container_width=True)
-    
-    save_persistent_settings(current_clinics, st.session_state.docs_df, st.session_state.capabilities_df)
+    # Save the edited states to persistent memory locally
+    save_persistent_settings(current_clinics, edited_docs_df, edited_cap_df)
     
     st.markdown("---")
     st.header("🛠️ Troubleshooter")
@@ -917,59 +916,83 @@ with tab1:
     st.subheader("Monthly Absences (Ferie, Desiderate, Leave Weeks)")
     st.markdown("Type the dates. Multiple dates must be separated by commas (e.g. `2026-07-04, 2026-07-05`).")
     
-    abs_docs = st.session_state.absences_df["Doctor"].tolist()
-    if set(abs_docs) != set(current_doctors):
-        for d in current_doctors:
-            if d not in abs_docs:
-                st.session_state.absences_df.loc[len(st.session_state.absences_df)] = [d, "", "", ""]
-        st.session_state.absences_df = st.session_state.absences_df[st.session_state.absences_df["Doctor"].isin(current_doctors)].reset_index(drop=True)
+    current_abs_state = st.session_state.get('last_edited_absences', st.session_state.absences_base_df)
     
-    st.session_state.absences_df = st.data_editor(
-        st.session_state.absences_df,
+    if list(current_abs_state["Doctor"]) != current_doctors:
+        new_df = pd.DataFrame({"Doctor": current_doctors})
+        new_df["Ferie (YYYY-MM-DD)"] = ""
+        new_df["Desiderate (YYYY-MM-DD)"] = ""
+        new_df["Leave Weeks (Type the Monday)"] = ""
+        for idx, row in current_abs_state.iterrows():
+            d = row["Doctor"]
+            if d in current_doctors:
+                new_df.loc[new_df["Doctor"] == d, "Ferie (YYYY-MM-DD)"] = row["Ferie (YYYY-MM-DD)"]
+                new_df.loc[new_df["Doctor"] == d, "Desiderate (YYYY-MM-DD)"] = row["Desiderate (YYYY-MM-DD)"]
+                new_df.loc[new_df["Doctor"] == d, "Leave Weeks (Type the Monday)"] = row["Leave Weeks (Type the Monday)"]
+        st.session_state.absences_base_df = new_df
+        
+    edited_absences_df = st.data_editor(
+        st.session_state.absences_base_df,
         column_config={"Doctor": st.column_config.TextColumn("Doctor Name", disabled=True)},
         hide_index=True, use_container_width=True
     )
+    st.session_state.last_edited_absences = edited_absences_df
 
 with tab2:
     st.subheader("Visual Override Grid")
     st.markdown("Click on any empty cell to forcefully lock a specific doctor into that shift.")
     
+    dynamic_shift_options = ['WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT'] + [f'OUT_{c}_AM' for c in current_clinics]
+
     if st.session_state.get("current_ym") != f"{selected_year}-{selected_month}":
         st.session_state["current_ym"] = f"{selected_year}-{selected_month}"
         for k in list(st.session_state.keys()):
-            if k.startswith("grid_week_"):
+            if k.startswith("grid_base_") or k.startswith("last_edited_grid_"):
                 del st.session_state[k]
 
-    dynamic_shift_options = ['WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT'] + [f'OUT_{c}_AM' for c in current_clinics]
-
+    edited_weekly_grids = {}
     for w_idx, week_start_idx in enumerate(range(0, len(ui_roster_dates), 7)):
         st.markdown(f"#### Week {w_idx + 1}")
         week_dates = ui_roster_dates[week_start_idx : week_start_idx + 7]
         col_names = [d.strftime("%Y-%m-%d") for d in week_dates]
-        state_key = f"grid_week_{w_idx}"
         
-        if state_key not in st.session_state:
+        base_key = f"grid_base_{w_idx}"
+        last_edited_key = f"last_edited_grid_{w_idx}"
+        
+        if base_key not in st.session_state:
             init_dict = {"Shift": dynamic_shift_options}
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
-            st.session_state[state_key] = pd.DataFrame(init_dict)
+            st.session_state[base_key] = pd.DataFrame(init_dict)
             
-        if list(st.session_state[state_key]["Shift"]) != dynamic_shift_options:
+        current_grid_state = st.session_state.get(last_edited_key, st.session_state[base_key])
+        
+        if list(current_grid_state["Shift"]) != dynamic_shift_options:
             init_dict = {"Shift": dynamic_shift_options}
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
-            st.session_state[state_key] = pd.DataFrame(init_dict)
-            
+            new_df = pd.DataFrame(init_dict)
+            for idx, row in current_grid_state.iterrows():
+                s = row["Shift"]
+                if s in dynamic_shift_options:
+                    for c in col_names:
+                        if c in current_grid_state.columns:
+                            new_df.loc[new_df["Shift"] == s, c] = row[c]
+            st.session_state[base_key] = new_df
+
         col_config = {"Shift": st.column_config.TextColumn("Shift", disabled=True)}
         for d in week_dates:
             d_str = d.strftime("%Y-%m-%d")
             display_name = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
             col_config[d_str] = st.column_config.SelectboxColumn(display_name, options=[""] + current_doctors)
             
-        st.session_state[state_key] = st.data_editor(
-            st.session_state[state_key], 
+        edited_grid = st.data_editor(
+            st.session_state[base_key], 
             column_config=col_config, 
             hide_index=True, 
-            use_container_width=True
+            use_container_width=True,
+            key=f"editor_grid_week_{w_idx}"
         )
+        st.session_state[last_edited_key] = edited_grid
+        edited_weekly_grids[w_idx] = edited_grid
         st.markdown("---")
 
 with tab3:
@@ -987,21 +1010,22 @@ with tab3:
                                    key=f"or_dates_{selected_year}_{selected_month}")
     or_days_formatted = [d.strftime("%Y-%m-%d") for d in or_days_input]
     
-    or_docs = st.session_state.capabilities_df[st.session_state.capabilities_df["OR Capable"] == True]["Doctor"].dropna().tolist() if "OR Capable" in st.session_state.capabilities_df.columns else []
+    or_docs = edited_cap_df[edited_cap_df["OR Capable"] == True]["Doctor"].dropna().tolist() if "OR Capable" in edited_cap_df.columns else []
     st.caption(f"**OR Capable Doctors (from Sidebar):** {', '.join(or_docs) if or_docs else 'None'}")
 
     st.markdown("---")
     st.subheader("Manage Outpatient Clinics")
     st.markdown("##### 1. Define Clinics")
     
-    st.session_state.clinics_df = st.data_editor(
-        st.session_state.clinics_df, 
+    edited_clinics_df = st.data_editor(
+        st.session_state.clinics_base_df, 
         num_rows="dynamic",
         column_config={"Clinic Name": st.column_config.TextColumn("Clinic Name", required=True)},
         use_container_width=True,
         hide_index=True
     )
-    current_clinics = [str(c).strip().upper().replace(" ", "_") for c in st.session_state.clinics_df["Clinic Name"].dropna().unique() if str(c).strip()]
+    st.session_state.clinics_base_df = edited_clinics_df
+    current_clinics = [str(c).strip().upper().replace(" ", "_") for c in edited_clinics_df["Clinic Name"].dropna().unique() if str(c).strip()]
     
     st.markdown("##### 2. Schedule Clinics")
     
@@ -1009,8 +1033,8 @@ with tab3:
     if current_clinics:
         for clinic in current_clinics:
             with st.expander(f"🩺 {clinic.replace('_', ' ')} Schedule", expanded=True):
-                if clinic in st.session_state.capabilities_df.columns:
-                    capable = st.session_state.capabilities_df[st.session_state.capabilities_df[clinic] == True]["Doctor"].dropna().tolist()
+                if clinic in edited_cap_df.columns:
+                    capable = edited_cap_df[edited_cap_df[clinic] == True]["Doctor"].dropna().tolist()
                 else:
                     capable = []
                     
@@ -1049,7 +1073,7 @@ with tab4:
                 doc_colors_ui = {}
                 doc_capabilities_dict = {}
 
-                for idx, row in st.session_state.docs_df.iterrows():
+                for idx, row in edited_docs_df.iterrows():
                     doc = str(row["Doctor"]).strip().upper()
                     if not doc: continue
                     pp = row.get("Private Practice (Afternoon)", "")
@@ -1057,7 +1081,7 @@ with tab4:
                     col = row.get("Color", "White")
                     doc_colors_ui[doc] = COLOR_PALETTE.get(col, "#FFFFFF")
 
-                for idx, row in st.session_state.capabilities_df.iterrows():
+                for idx, row in edited_cap_df.iterrows():
                     doc = row["Doctor"]
                     doc_capabilities_dict[doc] = {col: bool(row[col]) for col in cap_cols if col != "Doctor"}
 
@@ -1065,7 +1089,7 @@ with tab4:
                 desiderate_dict = {}
                 leave_list = []
 
-                for idx, row in st.session_state.absences_df.iterrows():
+                for idx, row in edited_absences_df.iterrows():
                     doc = str(row["Doctor"]).strip().upper()
                     if not doc: continue
                     
@@ -1085,17 +1109,14 @@ with tab4:
                         for d_str in dates: leave_list.append((doc, d_str))
 
                 manual_shifts = []
-                for w_idx in range(0, len(ui_roster_dates) // 7):
-                    state_key = f"grid_week_{w_idx}"
-                    if state_key in st.session_state:
-                        df_w = st.session_state[state_key]
-                        for idx, row in df_w.iterrows():
-                            shift_val = str(row["Shift"]).strip().upper()
-                            for d in ui_roster_dates[w_idx*7 : (w_idx*7)+7]:
-                                d_str = d.strftime("%Y-%m-%d")
-                                doc = row.get(d_str, "")
-                                if pd.notna(doc) and str(doc).strip():
-                                    manual_shifts.append((str(doc).strip().upper(), d_str, shift_val))
+                for w_idx, df_w in edited_weekly_grids.items():
+                    for idx, row in df_w.iterrows():
+                        shift_val = str(row["Shift"]).strip().upper()
+                        for d in ui_roster_dates[w_idx*7 : (w_idx*7)+7]:
+                            d_str = d.strftime("%Y-%m-%d")
+                            doc = row.get(d_str, "")
+                            if pd.notna(doc) and str(doc).strip():
+                                manual_shifts.append((str(doc).strip().upper(), d_str, shift_val))
 
                 manual_festivities = []
 
