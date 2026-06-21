@@ -1,0 +1,92 @@
+{
+    "BURGAZZI": {
+        "nights": 4,
+        "doubles": 4,
+        "saturdays": 4,
+        "sundays": 3,
+        "holidays": 0,
+        "super_holidays": 0,
+        "golden_weekends": 3
+    },
+    "CACCAMO": {
+        "nights": 10,
+        "doubles": 10,
+        "saturdays": 4,
+        "sundays": 1,
+        "holidays": 0,
+        "super_holidays": 0,
+        "golden_weekends": 3
+    },
+    "CARDINALI": {
+        "nights": 9,
+        "doubles": 9,
+        "saturdays": 3,
+        "sundays": 2,
+        "holidays": 0,
+        "super_holidays": 0,
+        "golden_weekends": 4
+    },
+    "CICCARELLI": {
+        "nights": 8,
+        "doubles": 8,
+        "saturdays": 2,
+        "sundays": 2,
+        "holidays": 0,
+        "super_holidays": 0,
+        "golden_weekends": 4
+    },
+    "CICCHIRILLO": {
+        "nights": 7,
+        "doubles": 6,
+        "saturdays": 3,
+        "sundays": 3,
+        "holidays": 0,
+        "super_holidays": 0,
+        "golden_weekends": 3
+    },
+    "FLORI": {
+        "nights": 7,
+        "doubles": 7,
+        "saturdays": 3,
+        "sundays": 2,
+        "holidays": 0,
+        "super_holidays": 0,
+        "golden_weekends": 4
+    },
+    "FINIZIO": {
+        "nights": 0,
+        "doubles": 0,
+        "saturdays": 4,
+        "sundays": 1,
+        "holidays": 0,
+        "super_holidays": 0,
+        "golden_weekends": 4
+    },
+    "NUCCI": {
+        "nights": 7,
+        "doubles": 7,
+        "saturdays": 2,
+        "sundays": 0,
+        "holidays": 0,
+        "super_holidays": 0,
+        "golden_weekends": 5
+    },
+    "ROBERTI": {
+        "nights": 4,
+        "doubles": 4,
+        "saturdays": 4,
+        "sundays": 3,
+        "holidays": 0,
+        "super_holidays": 0,
+        "golden_weekends": 3
+    },
+    "GAUDENZI": {
+        "nights": 0,
+        "doubles": 0,
+        "saturdays": 3,
+        "sundays": 0,
+        "holidays": 0,
+        "super_holidays": 0,
+        "golden_weekends": 5
+    }
+}
