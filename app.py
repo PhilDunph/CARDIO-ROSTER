@@ -82,7 +82,6 @@ def save_persistent_settings(clinics_list, docs_df, cap_df):
     with open(SETTINGS_FILE, 'w') as f: json.dump(data, f, indent=4)
 
 def load_historical_counters():
-    """Loads and upgrades the old flat counter dict to a Monthly Ledger system."""
     if not os.path.exists(COUNTER_FILE):
         return {"legacy_baseline": {}}
     try:
@@ -150,9 +149,11 @@ def get_indiv_name(s):
 # ==========================================
 # 3. DRAFT GENERATOR (Math Engine Only)
 # ==========================================
-def generate_draft_schedule(year, month, conditional_or_days, manual_festivities, manual_assignments,
+def generate_draft_schedule(year, month, conditional_or_days, manual_festivities, manual_super_holidays, manual_assignments,
                             doctor_capabilities, outpatient_configs, ferie, leave_weeks, desiderate, 
                             private_practice_afternoons, doctors_list, debug_mode=False):
+    
+    if manual_super_holidays is None: manual_super_holidays = []
     
     doctors = doctors_list
     roster_dates = get_roster_dates(year, month)
@@ -166,17 +167,14 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
     sunday_equivalent_days = []
     for day_idx, current_date in enumerate(roster_dates):
         is_sunday = current_date.weekday() == 6
-        is_holiday = current_date in it_holidays or current_date.strftime("%Y-%m-%d") in manual_festivities
+        is_holiday = current_date in it_holidays or current_date.strftime("%Y-%m-%d") in manual_festivities or current_date.strftime("%Y-%m-%d") in manual_super_holidays
         if is_sunday or is_holiday: sunday_equivalent_days.append(day_idx)
             
     manual_keys = set()
     for (d, date_str, s) in manual_assignments:
         if date_str in date_to_idx and d in doctors: manual_keys.add((d, date_to_idx[date_str], s))
 
-    # 🟢 DUAL-TRACK AVAILABILITY SCANNER
-    # 1. Scheduling Track (Ferie + Leave + Desiderate)
     doc_unavailable_set = {d: set() for d in doctors}
-    # 2. Contractual Hour Track (Ferie + Leave ONLY)
     doc_contract_off_set = {d: set() for d in doctors}
 
     for d in doctors:
@@ -215,11 +213,10 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
     gaudenzi_manual_active_hrs = sum(12 if s == 'NIGHT' else (6 if 'REP' not in s else 0) for (d, day, s) in manual_keys if d == 'GAUDENZI')
     total_available_hours -= gaudenzi_manual_active_hrs
     
-    # Contractual minimum hours based strictly on legal days available
-    total_required_hours = sum(int((doc_contract_days[d] / 7.0) * 38) for d in doctors if d != 'GAUDENZI')
+    total_required_hours = sum(int((doc_contract_days[d] / 7.0) * 34) for d in doctors if d != 'GAUDENZI')
     
     if total_required_hours > total_available_hours and not debug_mode:
-        return False, None, f"🛑 MATHEMATICAL IMPOSSIBILITY: Law requires {total_required_hours}h total from active doctors, but department only has {total_available_hours}h scheduled. Add clinics or use Debug Mode."
+        return False, None, f"🛑 MATHEMATICAL IMPOSSIBILITY: The 34h clinical minimum (38h - 4h ECM) requires {total_required_hours}h total from active doctors, but department only has {total_available_hours}h scheduled. Add clinics or use Debug Mode."
 
     for day_idx in range(num_days):
         current_date_str = roster_dates[day_idx].strftime("%Y-%m-%d")
@@ -384,7 +381,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
     if not debug_mode:
         for d in doctors:
             if d == 'GAUDENZI': continue
-            tgt_hours = int((doc_contract_days[d] / 7.0) * 38)
+            tgt_hours = int((doc_contract_days[d] / 7.0) * 34)
             active_expr = sum(work[(d, day_idx, s)] * 6 for day_idx in range(num_days) for s in day_active) + \
                           sum(work[(d, day_idx, 'NIGHT')] * 12 for day_idx in range(num_days))
             model.Add(active_expr >= tgt_hours)
@@ -486,7 +483,8 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                                  (curr_date.month == 1 and curr_date.day == 1) or
                                  (curr_date.month == 4 and curr_date.day == 25) or
                                  (curr_date.month == 6 and curr_date.day in [1, 2]) or
-                                 (curr_date.month == 8 and curr_date.day == 15) or is_easter)
+                                 (curr_date.month == 8 and curr_date.day == 15) or is_easter or
+                                 curr_date.strftime("%Y-%m-%d") in manual_super_holidays)
             is_eve = (curr_date.month == 12 and curr_date.day in [24, 31])
             
             sat_pts = int(lifetime[d]['saturdays'] * 10) 
@@ -500,7 +498,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 objective_terms.append(-1 * sun_pts * work[(d, day_idx, 'NIGHT')])
                 for s in day_active: objective_terms.append(-1 * int(sun_pts/2) * work[(d, day_idx, s)])
             
-            if curr_date in it_holidays or curr_date.strftime("%Y-%m-%d") in manual_festivities: 
+            if curr_date in it_holidays or curr_date.strftime("%Y-%m-%d") in manual_festivities or curr_date.strftime("%Y-%m-%d") in manual_super_holidays: 
                 worked_any = model.NewBoolVar('')
                 model.Add(sum(work[(d, day_idx, s)] for s in shifts) > 0).OnlyEnforceIf(worked_any)
                 model.Add(sum(work[(d, day_idx, s)] for s in shifts) == 0).OnlyEnforceIf(worked_any.Not())
@@ -547,8 +545,10 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
 # ==========================================
 # 4. EXPORT ENGINE (Reads Edited UI Draft)
 # ==========================================
-def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or_days, manual_festivities,
+def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or_days, manual_festivities, manual_super_holidays,
                                 outpatient_configs, ferie, leave_weeks, desiderate, doctor_colors, doctors_list):
+    
+    if manual_super_holidays is None: manual_super_holidays = []
     
     doctors = doctors_list
     roster_dates = get_roster_dates(year, month)
@@ -562,7 +562,7 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
     sunday_equivalent_days = []
     for day_idx, current_date in enumerate(roster_dates):
         is_sunday = current_date.weekday() == 6
-        is_holiday = current_date in it_holidays or current_date.strftime("%Y-%m-%d") in manual_festivities
+        is_holiday = current_date in it_holidays or current_date.strftime("%Y-%m-%d") in manual_festivities or current_date.strftime("%Y-%m-%d") in manual_super_holidays
         if is_sunday or is_holiday: sunday_equivalent_days.append(day_idx)
             
     doc_contract_off_set = {d: set() for d in doctors}
@@ -623,7 +623,7 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
             if curr_date.weekday() == 5: monthly_stats[doc]['saturdays'] += day_pts
             elif curr_date.weekday() == 6: monthly_stats[doc]['sundays'] += day_pts
                 
-            if worked_today and (curr_date in it_holidays or curr_date.strftime("%Y-%m-%d") in manual_festivities):
+            if worked_today and (curr_date in it_holidays or curr_date.strftime("%Y-%m-%d") in manual_festivities or curr_date.strftime("%Y-%m-%d") in manual_super_holidays):
                 monthly_stats[doc]['holidays'] += 1
 
             is_easter = (it_holidays.get(curr_date) == "Pasqua di Resurrezione")
@@ -631,7 +631,8 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
                                  (curr_date.month == 1 and curr_date.day == 1) or
                                  (curr_date.month == 4 and curr_date.day == 25) or
                                  (curr_date.month == 6 and curr_date.day in [1, 2]) or
-                                 (curr_date.month == 8 and curr_date.day == 15) or is_easter)
+                                 (curr_date.month == 8 and curr_date.day == 15) or is_easter or
+                                 curr_date.strftime("%Y-%m-%d") in manual_super_holidays)
             is_eve = (curr_date.month == 12 and curr_date.day in [24, 31])
             
             sh_pts = 0.0
@@ -746,7 +747,7 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
             actual_hours = monthly_stats[doc]['total_hours']
             difference_display = "N/A"
         else:
-            doc_target = int((doc_contract_days[doc] / 7) * 38)
+            doc_target = int((doc_contract_days[doc] / 7) * 34)
             doc_target_display = doc_target
             actual_hours = monthly_stats[doc]['total_hours']
             difference = actual_hours - doc_target
@@ -898,10 +899,6 @@ with st.sidebar:
     st.session_state.last_edited_caps = edited_cap_df
     
     save_persistent_settings(current_clinics, edited_docs_df, edited_cap_df)
-    
-    st.markdown("---")
-    st.header("🛠️ Troubleshooter")
-    debug_toggle = st.checkbox("🚨 Enable Emergency Debug Mode", help="Ignores all equity rules to force a schedule.")
 
 ui_roster_dates = get_roster_dates(selected_year, selected_month)
 
@@ -935,9 +932,9 @@ with tab1:
 
 with tab2:
     st.subheader("Visual Override Grid")
-    st.markdown("Click on any empty cell to forcefully lock a specific doctor into that shift.")
+    st.markdown("Click on any empty cell to forcefully lock a specific doctor into that shift. Use the **🌟 SUPER HOLIDAY** row to manually flag a day (e.g. Patron Saint) as a holiday.")
     
-    dynamic_shift_options = ['WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT'] + [f'OUT_{c}_AM' for c in current_clinics]
+    dynamic_shift_options = ['🌟 SUPER HOLIDAY', 'WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT'] + [f'OUT_{c}_AM' for c in current_clinics]
 
     if st.session_state.get("current_ym_manual") != f"{selected_year}-{selected_month}":
         st.session_state["current_ym_manual"] = f"{selected_year}-{selected_month}"
@@ -977,7 +974,7 @@ with tab2:
         for d in week_dates:
             d_str = d.strftime("%Y-%m-%d")
             display_name = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
-            col_config[d_str] = st.column_config.SelectboxColumn(display_name, options=[""] + current_doctors)
+            col_config[d_str] = st.column_config.SelectboxColumn(display_name, options=["", "YES"] + current_doctors)
             
         edited_grid = st.data_editor(
             st.session_state[base_key], 
@@ -1073,18 +1070,21 @@ with tab4:
                         for d_str in [d.strip() for d in str(l_w).split(",") if d.strip()]: leave_list.append((doc, d_str))
 
                 manual_shifts = []
+                manual_super_holidays = []
                 for w_idx, df_w in edited_manual_grids.items():
                     for idx, row in df_w.iterrows():
                         shift_val = str(row["Shift"]).strip().upper()
                         for d in ui_roster_dates[w_idx*7 : (w_idx*7)+7]:
                             d_str = d.strftime("%Y-%m-%d")
-                            doc = row.get(d_str, "")
-                            if pd.notna(doc) and str(doc).strip():
-                                manual_shifts.append((str(doc).strip().upper(), d_str, shift_val))
+                            val = str(row.get(d_str, "")).strip().upper()
+                            if shift_val == '🌟 SUPER HOLIDAY':
+                                if val == 'YES': manual_super_holidays.append(d_str)
+                            elif val and val in current_doctors:
+                                manual_shifts.append((val, d_str, shift_val))
 
                 success, draft_grids, warning = generate_draft_schedule(
                     year=selected_year, month=selected_month, conditional_or_days=or_days_formatted, 
-                    manual_festivities=[], manual_assignments=manual_shifts,
+                    manual_festivities=[], manual_super_holidays=manual_super_holidays, manual_assignments=manual_shifts,
                     doctor_capabilities=doc_capabilities_dict, outpatient_configs=outpatient_setup, 
                     ferie=ferie_dict, leave_weeks=leave_list, desiderate=desiderate_dict,
                     private_practice_afternoons=pp_dict, doctors_list=current_doctors, debug_mode=debug_toggle
@@ -1146,9 +1146,19 @@ with tab5:
                     if pd.notna(l_w) and l_w: 
                         for d_str in [d.strip() for d in str(l_w).split(",") if d.strip()]: leave_list.append((doc, d_str))
 
+                manual_super_holidays = []
+                for w_idx, df_w in edited_manual_grids.items():
+                    for idx, row in df_w.iterrows():
+                        shift_val = str(row["Shift"]).strip().upper()
+                        for d in ui_roster_dates[w_idx*7 : (w_idx*7)+7]:
+                            d_str = d.strftime("%Y-%m-%d")
+                            val = str(row.get(d_str, "")).strip().upper()
+                            if shift_val == '🌟 SUPER HOLIDAY' and val == 'YES':
+                                manual_super_holidays.append(d_str)
+
                 excel_data = process_and_export_schedule(
                     edited_weekly_grids=edited_final_drafts, year=selected_year, month=selected_month, 
-                    conditional_or_days=or_days_formatted, manual_festivities=[],
+                    conditional_or_days=or_days_formatted, manual_festivities=[], manual_super_holidays=manual_super_holidays,
                     outpatient_configs=outpatient_setup, ferie=ferie_dict, leave_weeks=leave_list, desiderate=desiderate_dict, 
                     doctor_colors=doc_colors_ui, doctors_list=current_doctors
                 )
