@@ -57,7 +57,6 @@ def load_persistent_settings():
             if "docs_base" in data and "capabilities" in data:
                 return data
                 
-            # Smart Upgrader for old file formats
             elif "doctors" in data:
                 docs_base = []
                 caps = []
@@ -94,6 +93,7 @@ def save_persistent_settings(clinics_list, docs_df, cap_df):
     }
     with open(SETTINGS_FILE, 'w') as f:
         json.dump(data, f, indent=4)
+
 
 # ==========================================
 # 2. THE MATH ENGINE (Core Logic)
@@ -194,6 +194,12 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
         if is_sunday or is_holiday:
             sunday_equivalent_days.append(day_idx)
             
+    # Process Manual Assignments for Lookup
+    manual_keys = set()
+    for (d, date_str, s) in manual_assignments:
+        if date_str in date_to_idx and d in doctors:
+            manual_keys.add((d, date_to_idx[date_str], s))
+            
     all_leave_dates = []
     for d, dates in ferie.items(): all_leave_dates.extend([(d, date_str) for date_str in dates])
     for d, dates in desiderate.items(): all_leave_dates.extend([(d, date_str) for date_str in dates])
@@ -228,12 +234,40 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
         
     doc_active_days = {d: max(1, num_days - doc_unavailable_days[d]) for d in doctors}
 
+    # 🟢 38 HOUR LAW ENFORCEMENT & AVAILABLE POOL MATH
+    total_available_hours = 0
+    for day_idx in range(num_days):
+        current_date_str = roster_dates[day_idx].strftime("%Y-%m-%d")
+        if day_idx in sunday_equivalent_days:
+            total_available_hours += 24  # WARD_AM(6) + WARD_PM(6) + NIGHT(12)
+        else:
+            total_available_hours += 36  # WARD_AM(6) + URG_AM(6) + WARD_PM(6) + URG_PM(6) + NIGHT(12)
+            if current_date_str in conditional_or_days:
+                total_available_hours += 6
+            for out_type, config in outpatient_configs.items():
+                if current_date_str in config['days']:
+                    total_available_hours += 6
+
+    # Subtract Gaudenzi's manual load from the available pool so the others aren't starved
+    gaudenzi_manual_active_hrs = 0
+    for (d, day_idx, s) in manual_keys:
+        if d == 'GAUDENZI':
+            if s == 'NIGHT': gaudenzi_manual_active_hrs += 12
+            elif 'REP' not in s: gaudenzi_manual_active_hrs += 6
+            
+    total_available_hours -= gaudenzi_manual_active_hrs
+    total_required_hours = sum(int((doc_active_days[d] / 7.0) * 38) for d in doctors if d != 'GAUDENZI')
+    
+    if total_required_hours > total_available_hours and not debug_mode:
+        return False, None, "", f"🛑 MATHEMATICAL IMPOSSIBILITY: The 38-hour law requires {total_required_hours} total active hours from your doctors, but the department only has {total_available_hours} hours of clinical shifts scheduled this month. Please add more Outpatient Clinics or OR days to legally cover the required staff hours."
+
     for day_idx in range(num_days):
         current_date_str = roster_dates[day_idx].strftime("%Y-%m-%d")
         if day_idx in sunday_equivalent_days: min_bodies_needed = 3
         else: min_bodies_needed = 4
         unavailable = 0
         for d in doctors:
+            if d == 'GAUDENZI': continue # He doesn't count toward baseline availability
             is_off = False
             if d in ferie and current_date_str in ferie[d]: is_off = True
             if d in desiderate and current_date_str in desiderate[d]: is_off = True
@@ -244,7 +278,12 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
                         is_off = True
             if is_off: unavailable += 1
             
-        available_bodies = len(doctors) - unavailable
+        available_bodies = len([d for d in doctors if d != 'GAUDENZI']) - unavailable
+        
+        # If Gaudenzi is forced on this day, he functions as an extra body
+        if any((d == 'GAUDENZI' and day == day_idx) for (d, day, s) in manual_keys):
+            available_bodies += 1
+            
         if available_bodies < min_bodies_needed:
             return False, None, "", f"🛑 CRITICAL STAFFING SHORTAGE ON {current_date_str}: You only have {available_bodies} doctors available, but you need at least {min_bodies_needed} to legally run the department."
 
@@ -261,25 +300,33 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
 
     objective_terms = []
 
+    # 🟢 1. STRICT MANUAL LOCKS
     for (d, date_str, s) in manual_assignments:
         if date_str in date_to_idx and d in doctors:
             key = (d, date_to_idx[date_str], s)
             if key in work: model.Add(work[key] == 1)
 
+    # 🟢 2. GAUDENZI IS MANUAL ONLY
+    if 'GAUDENZI' in doctors:
+        for day_idx in range(num_days):
+            for s in shifts:
+                if ('GAUDENZI', day_idx, s) not in manual_keys:
+                    model.Add(work[('GAUDENZI', day_idx, s)] == 0)
+
     for d, dates in ferie.items():
-        if d in doctors:
+        if d in doctors and d != 'GAUDENZI':
             for date_str in dates:
                 if date_str in date_to_idx:
                     for s in shifts: model.Add(work[(d, date_to_idx[date_str], s)] == 0)
                 
     for d, dates in desiderate.items():
-        if d in doctors:
+        if d in doctors and d != 'GAUDENZI':
             for date_str in dates:
                 if date_str in date_to_idx:
                     for s in shifts: model.Add(work[(d, date_to_idx[date_str], s)] == 0)
 
     for d, start_monday_str in leave_weeks:
-        if d in doctors and start_monday_str in date_to_idx:
+        if d in doctors and d != 'GAUDENZI' and start_monday_str in date_to_idx:
             start_idx = date_to_idx[start_monday_str]
             for i in range(7):
                 if 0 <= start_idx + i < num_days:
@@ -333,6 +380,8 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
     day_name_to_num = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 'Friday': 4, 'Saturday': 5, 'Sunday': 6}
 
     for d in doctors:
+        if d == 'GAUDENZI': continue # <--- Bypass all automated physics for Gaudenzi
+        
         pp_day_num = day_name_to_num.get(private_practice_afternoons.get(d, "").strip().capitalize(), -1)
         for day_idx in range(num_days):
             weekday = roster_dates[day_idx].weekday()
@@ -364,17 +413,6 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
                 model.Add(work[(d, day_idx, 'NIGHT')] == 0)
                 model.Add(work[(d, day_idx, 'REP_NIGHT')] == 0)
                 model.Add(sum(work[(d, day_idx, s)] for s in shifts) <= 1)
-                
-            elif d == 'GAUDENZI':
-                model.Add(work[(d, day_idx, 'NIGHT')] == 0)
-                model.Add(work[(d, day_idx, 'REP_NIGHT')] == 0)
-                model.Add(work[(d, day_idx, 'REP_DAY')] == 0)
-                if weekday == 4: 
-                    for s in shifts:
-                        if s not in ['WARD_PM', 'URG_PM']: model.Add(work[(d, day_idx, s)] == 0)
-                elif weekday == 5: pass 
-                else: 
-                    for s in shifts: model.Add(work[(d, day_idx, s)] == 0)
             else:
                 if day_idx < num_days - 1:
                     is_pre_night = work[(d, day_idx + 1, 'NIGHT')]
@@ -416,11 +454,23 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             model.Add(sum(doctor_gws) >= 1)
 
     weeks = [range(i, i + 7) for i in range(0, num_days, 7)]
-    for w in weeks:
-        if 'GAUDENZI' in doctors:
-            model.Add(sum((12 if s in ['NIGHT', 'REP_NIGHT', 'REP_DAY'] else 6) * work[('GAUDENZI', day_idx, s)] for day_idx in w for s in shifts) <= 20)
+
+    # 🟢 MANDATORY HOUR LIMITS & PROPORTIONAL EQUITY (Excluding Gaudenzi)
+    surplus_hours = max(0, total_available_hours - total_required_hours)
+    max_flex = int(surplus_hours / len([d for d in doctors if d != 'GAUDENZI'])) + 18 
 
     if not debug_mode:
+        for d in doctors:
+            if d == 'GAUDENZI': continue # Bypass
+            tgt_hours = int((doc_active_days[d] / 7.0) * 38)
+            active_expr = sum(work[(d, day_idx, s)] * 6 for day_idx in range(num_days) for s in day_active) + \
+                          sum(work[(d, day_idx, 'NIGHT')] * 12 for day_idx in range(num_days))
+            
+            # Floor
+            model.Add(active_expr >= tgt_hours)
+            # Ceiling
+            model.Add(active_expr <= tgt_hours + max_flex)
+
         night_doctors = [d for d in doctors if d not in ['FINIZIO', 'GAUDENZI']]
         total_active_night_days = sum(doc_active_days[d] for d in night_doctors)
         
@@ -470,17 +520,19 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
 
         for d in standard_doctors:
             expected_days = (doc_active_days[d] / total_active_std_days) * total_day_shifts if total_active_std_days else 0
-            min_d = max(0, int(expected_days) - 3)
-            max_d = int(expected_days) + 5
+            min_d = max(0, int(expected_days) - 4)
+            max_d = int(expected_days) + 6
             model.Add(sum(work[(d, day_idx, s)] for day_idx in range(num_days) for s in day_active) >= min_d)
             model.Add(sum(work[(d, day_idx, s)] for day_idx in range(num_days) for s in day_active) <= max_d)
 
     for d in doctors:
+        if d == 'GAUDENZI': continue # Bypass
         if doctor_capabilities.get(d, {}).get("Ward Preferred", False):
             for day_idx in range(num_days):
                 objective_terms.extend([20 * work[(d, day_idx, 'WARD_AM')], 20 * work[(d, day_idx, 'WARD_PM')]])
 
     for d in doctors:
+        if d == 'GAUDENZI': continue # Bypass
         for day_idx in range(num_days - 1):
             am_pm = model.NewBoolVar('')
             model.AddBoolAnd([work[(d, day_idx, 'WARD_AM')], work[(d, day_idx+1, 'WARD_PM')]]).OnlyEnforceIf(am_pm)
@@ -572,7 +624,12 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
                 
                 for s in worked_today:
                     monthly[doc]['total_shifts'] += 1
-                    monthly[doc]['total_hours'] += 12 if s in ['NIGHT', 'REP_NIGHT', 'REP_DAY'] else 6
+                    if s == 'NIGHT':
+                        monthly[doc]['total_hours'] += 12 
+                    elif 'REP' in s:
+                        monthly[doc]['total_hours'] += 0 
+                    else:
+                        monthly[doc]['total_hours'] += 6
                 
                 if 'NIGHT' in worked_today:
                     monthly[doc]['nights'] += 1
@@ -679,7 +736,7 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             rep_shifts = ['REP_NIGHT']
             if rep_day_open: rep_shifts.append('REP_DAY')
 
-            for section_name, section_shifts in [("MATTINA", week_shifts_am), ("POMERIGGIO", week_shifts_pm), ("NOTTE", ['NIGHT']), ("REPERIBILITÀ", rep_shifts)]:
+            for section_name, section_shifts in [("MATTINA", week_shifts_am), ("POMERIGGIO", week_shifts_pm), ("NOTTE E REPERIBILITÀ", ['NIGHT'] + rep_shifts)]:
                 worksheet.merge_range(row_cursor, 0, row_cursor, 7, section_name, section_format)
                 row_cursor += 1
                 for s in section_shifts:
@@ -714,7 +771,7 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             row_cursor += 1
 
         # --- THE DASHBOARD ---
-        dashboard_header = ['Doctor', 'Proportional Target Hours', 'Actual Monthly Hours', 'Difference (+/-)',
+        dashboard_header = ['Doctor', 'Proportional Target Hours', 'Actual Active Hours', 'Difference (+/-)',
                             'Monthly Nights', 'Monthly On-Call (Rep)', 'Monthly Doubles', 'Monthly Saturdays', 'Monthly Sundays', 'Monthly Holidays', 'Monthly Super Hols', 'Monthly Golden Wknds',
                             'LIFETIME Nights', 'LIFETIME On-Call', 'LIFETIME Doubles', 'LIFETIME Saturdays', 'LIFETIME Sundays', 'LIFETIME Holidays', 'LIFETIME Super Hols', 'LIFETIME Golden Wknds']
         
@@ -726,12 +783,19 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
         row_cursor += 1
         
         for doc in doctors:
-            doc_target = int((doc_active_days[doc] / 7) * 20) if doc == 'GAUDENZI' else int((doc_active_days[doc] / 7) * 38)
-            actual_hours = monthly[doc]['total_hours']
-            difference = actual_hours - doc_target
+            if doc == 'GAUDENZI':
+                doc_target_display = "MANUAL"
+                actual_hours = monthly[doc]['total_hours']
+                difference_display = "N/A"
+            else:
+                doc_target = int((doc_active_days[doc] / 7) * 38)
+                doc_target_display = doc_target
+                actual_hours = monthly[doc]['total_hours']
+                difference = actual_hours - doc_target
+                difference_display = f"+{difference}" if difference > 0 else str(difference)
             
             data_row = [
-                doc, doc_target, actual_hours, f"+{difference}" if difference > 0 else str(difference),
+                doc, doc_target_display, actual_hours, difference_display,
                 monthly[doc]['nights'], monthly[doc]['reps'], monthly[doc]['doubles'], f"{monthly[doc]['saturdays']:.1f}", f"{monthly[doc]['sundays']:.1f}", monthly[doc]['holidays'], f"{monthly[doc]['super_holidays']:.1f}", monthly[doc]['golden_weekends'],
                 lifetime[doc]['nights'], lifetime[doc]['reps'], lifetime[doc]['doubles'], f"{lifetime[doc]['saturdays']:.1f}", f"{lifetime[doc]['sundays']:.1f}", lifetime[doc]['holidays'], f"{lifetime[doc]['super_holidays']:.1f}", lifetime[doc]['golden_weekends']
             ]
@@ -828,7 +892,6 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
         debug_msg = " [DEBUG MODE ENABLED: Fairness metrics ignored]" if debug_mode else ""
         if commit_to_history and not debug_mode: 
             with open(COUNTER_FILE, 'w') as f: json.dump(lifetime, f, indent=4)
-            push_to_github(SETTINGS_FILE, "Auto-sync: Settings Updated")
             push_to_github(COUNTER_FILE, "Auto-sync: Official Roster Published (Stats Saved)")
             return True, output.getvalue(), overlap_warning, f"Schedule solved! Block: {roster_dates[0].strftime('%b %d')} to {roster_dates[-1].strftime('%b %d')}. (OFFICIAL: Stats Saved){debug_msg}"
         else:
@@ -836,7 +899,6 @@ def generate_cardiology_schedule(year, month, conditional_or_days, manual_festiv
             
     else:
         return False, None, overlap_warning, "Constraints are too tight. The algorithm cannot find a mathematically legal schedule. Try using Emergency Debug Mode."
-
 
 # ==========================================
 # 3. THE GRAPHICAL USER INTERFACE (GUI)
@@ -901,7 +963,6 @@ with st.sidebar:
     edited_cap_df = st.data_editor(st.session_state.cap_base_df, hide_index=True, use_container_width=True)
     st.session_state.last_edited_caps = edited_cap_df
     
-    # Save the edited states to persistent memory locally
     save_persistent_settings(current_clinics, edited_docs_df, edited_cap_df)
     
     st.markdown("---")
