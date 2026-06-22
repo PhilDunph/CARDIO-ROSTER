@@ -15,7 +15,6 @@ from github import Github
 # 0. GITHUB CLOUD SYNC ENGINE
 # ==========================================
 def push_to_github(file_path, commit_message):
-    """Silently pushes local json updates to GitHub if running on Streamlit Cloud."""
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
         try:
             g = Github(st.secrets["GITHUB_TOKEN"])
@@ -105,7 +104,7 @@ def get_roster_dates(year, month):
     cal = calendar.Calendar(firstweekday=0) 
     mondays = []
     for week in cal.monthdatescalendar(year, month):
-        if week[0].month == month:
+        if any(d.month == month for d in week):
             if week[0] not in mondays: mondays.append(week[0])
     
     if not mondays: return []
@@ -388,71 +387,82 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
             for day_idx in range(num_days):
                 weekday = roster_dates[day_idx].weekday()
                 
-                if weekday == pp_day_num:
-                    for s in shifts:
-                        if s.endswith('_PM') or s == 'REP_DAY': model.Add(work[(d, day_idx, s)] == 0)
-                    objective_terms.append(500 * work[(d, day_idx, 'NIGHT')])
-                    objective_terms.append(300 * work[(d, day_idx, 'REP_NIGHT')])
-                        
-                next_day_date = roster_dates[day_idx] + datetime.timedelta(days=1)
-                if next_day_date.weekday() == pp_day_num:
+                if d == 'FINIZIO':
                     model.Add(work[(d, day_idx, 'NIGHT')] == 0)
                     model.Add(work[(d, day_idx, 'REP_NIGHT')] == 0)
-                
-                model.Add(work[(d, day_idx, 'NIGHT')] == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_NIGHT')])
-                model.Add(sum(work[(d, day_idx, s)] for s in day_active) == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_DAY')])
-                
-                if day_idx in sunday_equivalent_days:
-                    rep_and_night = model.NewBoolVar('')
-                    model.AddBoolAnd([work[(d, day_idx, 'NIGHT')], work[(d, day_idx, 'REP_DAY')]]).OnlyEnforceIf(rep_and_night)
-                    objective_terms.append(1000 * rep_and_night) 
-                    
-                model.Add(work[(d, day_idx, 'REP_NIGHT')] == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_DAY')])
-                
-                if day_idx + 1 < num_days:
-                    model.Add(sum(work[(d, day_idx + 1, s)] for s in day_active) == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_NIGHT')])
-                    model.Add(work[(d, day_idx + 1, 'REP_DAY')] == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_NIGHT')])
-                
-                if day_idx < num_days - 1:
-                    is_pre_night = work[(d, day_idx + 1, 'NIGHT')]
-                    
-                    if pass_level < 3: model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 2)
-                    
-                    if day_idx not in sunday_equivalent_days:
-                        if pass_level < 3: model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 1).OnlyEnforceIf(is_pre_night.Not())
-                        
-                    pre_night_double = model.NewBoolVar('')
-                    model.Add(sum(work[(d, day_idx, s)] for s in day_active) == 2).OnlyEnforceIf(pre_night_double)
-                    model.Add(sum(work[(d, day_idx, s)] for s in day_active) != 2).OnlyEnforceIf(pre_night_double.Not())
-                    
-                    ideal_pre_night = model.NewBoolVar('')
-                    model.AddBoolAnd([is_pre_night, pre_night_double, work[(d, day_idx, 'REP_NIGHT')]]).OnlyEnforceIf(ideal_pre_night)
-                    
-                    if pass_level == 0:
-                        model.Add(ideal_pre_night == 1).OnlyEnforceIf(is_pre_night)
-                    else:
-                        objective_terms.append(2000 * ideal_pre_night)
+                    model.Add(sum(work[(d, day_idx, s)] for s in shifts) <= 1)
                 else:
-                    if pass_level < 3:
-                        if day_idx not in sunday_equivalent_days: model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 1)
-                        else: model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 2)
-                
-                other_than_night = [s for s in shifts if s != 'NIGHT']
-                model.Add(sum(work[(d, day_idx, s)] for s in other_than_night) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
-                if day_idx + 1 < num_days: model.Add(sum(work[(d, day_idx + 1, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
-                if day_idx + 2 < num_days: model.Add(sum(work[(d, day_idx + 2, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
+                    if weekday == pp_day_num:
+                        for s in shifts:
+                            if s.endswith('_PM') or s == 'REP_DAY': model.Add(work[(d, day_idx, s)] == 0)
+                        objective_terms.append(500 * work[(d, day_idx, 'NIGHT')])
+                        objective_terms.append(300 * work[(d, day_idx, 'REP_NIGHT')])
+                            
+                    next_day_date = roster_dates[day_idx] + datetime.timedelta(days=1)
+                    if next_day_date.weekday() == pp_day_num:
+                        model.Add(work[(d, day_idx, 'NIGHT')] == 0)
+                        model.Add(work[(d, day_idx, 'REP_NIGHT')] == 0)
+                    
+                    model.Add(work[(d, day_idx, 'NIGHT')] == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_NIGHT')])
+                    model.Add(sum(work[(d, day_idx, s)] for s in day_active) == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_DAY')])
+                    
+                    if day_idx in sunday_equivalent_days:
+                        rep_and_night = model.NewBoolVar('')
+                        model.AddBoolAnd([work[(d, day_idx, 'NIGHT')], work[(d, day_idx, 'REP_DAY')]]).OnlyEnforceIf(rep_and_night)
+                        objective_terms.append(1000 * rep_and_night) 
+                        
+                    model.Add(work[(d, day_idx, 'REP_NIGHT')] == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_DAY')])
+                    
+                    if day_idx + 1 < num_days:
+                        model.Add(sum(work[(d, day_idx + 1, s)] for s in day_active) == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_NIGHT')])
+                        model.Add(work[(d, day_idx + 1, 'REP_DAY')] == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_NIGHT')])
+                    
+                    if day_idx < num_days - 1:
+                        is_pre_night = work[(d, day_idx + 1, 'NIGHT')]
+                        
+                        if pass_level < 3: model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 2)
+                        
+                        if day_idx not in sunday_equivalent_days:
+                            if pass_level < 3: model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 1).OnlyEnforceIf(is_pre_night.Not())
+                            
+                        pre_night_double = model.NewBoolVar('')
+                        model.Add(sum(work[(d, day_idx, s)] for s in day_active) == 2).OnlyEnforceIf(pre_night_double)
+                        model.Add(sum(work[(d, day_idx, s)] for s in day_active) != 2).OnlyEnforceIf(pre_night_double.Not())
+                        
+                        ideal_pre_night = model.NewBoolVar('')
+                        model.AddBoolAnd([is_pre_night, pre_night_double, work[(d, day_idx, 'REP_NIGHT')]]).OnlyEnforceIf(ideal_pre_night)
+                        
+                        if pass_level == 0:
+                            model.Add(ideal_pre_night == 1).OnlyEnforceIf(is_pre_night)
+                        else:
+                            objective_terms.append(2000 * ideal_pre_night)
+                    else:
+                        if pass_level < 3:
+                            if day_idx not in sunday_equivalent_days: model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 1)
+                            else: model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 2)
+                    
+                    other_than_night = [s for s in shifts if s != 'NIGHT']
+                    model.Add(sum(work[(d, day_idx, s)] for s in other_than_night) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
+                    if day_idx + 1 < num_days: model.Add(sum(work[(d, day_idx + 1, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
+                    if day_idx + 2 < num_days: model.Add(sum(work[(d, day_idx + 2, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
 
+            # 🟢 BOSS LOGIC: THE WEEKEND PENDULUM & ROBIN HOOD EQUITY
             doctor_gws = []
             for week_start_idx in range(0, num_days, 7):
                 fri_idx, sat_idx, sun_idx = week_start_idx + 4, week_start_idx + 5, week_start_idx + 6
                 gw_var = model.NewBoolVar(f'gw_{d}_{week_start_idx}')
+                
                 ruining_shifts = [work[(d, fri_idx, 'NIGHT')], work[(d, fri_idx, 'REP_NIGHT')]]
                 for s in shifts: ruining_shifts.extend([work[(d, sat_idx, s)], work[(d, sun_idx, s)]])
                 model.Add(sum(ruining_shifts) == 0).OnlyEnforceIf(gw_var)
                 model.Add(sum(ruining_shifts) > 0).OnlyEnforceIf(gw_var.Not())
                 doctor_gws.append(gw_var)
-                objective_terms.append(-5 * int(lifetime[d]['golden_weekends']) * gw_var)
                 
+                # ROBIN HOOD MATH: Heavily rewards giving a GW, but slashes the reward by 50pts for every GW they already have.
+                gw_pts = int(lifetime[d]['golden_weekends'] * 50)
+                objective_terms.append((1000 - gw_pts) * gw_var)
+                
+                # Alternating Weekend Logic
                 if week_start_idx >= 7:
                     prev_gw_var = doctor_gws[-2]
                     two_gws = model.NewBoolVar('')
@@ -464,13 +474,15 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                         model.Add(two_works == 0)
                         model.Add(two_gws == 0)
                     else:
-                        objective_terms.append(-2000 * two_works)
-                        objective_terms.append(-1000 * two_gws)
+                        # Extremely aggressive penalties to force alternating weekends
+                        objective_terms.append(-5000 * two_works)
+                        objective_terms.append(-3000 * two_gws)
                 
             if pass_level < 2: model.Add(sum(doctor_gws) >= 1)
 
+        # 🟢 PRE-VACATION NIGHT (Absolute Priority)
         for d in doctors:
-            if d == 'GAUDENZI': continue
+            if d == 'GAUDENZI' or d == 'FINIZIO': continue
             for week_start_idx in range(0, num_days, 7):
                 week_days = range(week_start_idx, min(week_start_idx + 7, num_days))
                 if len(week_days) == 7:
@@ -483,6 +495,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
 
         weeks = [range(i, i + 7) for i in range(0, num_days, 7)]
 
+        # 🟢 MIN-MAX FAIRNESS FOR HOUR DISTRIBUTION
         diff_p_vars = {}
         diff_m_vars = {}
         
@@ -521,6 +534,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
         objective_terms.append(-2000 * max_dm)
         objective_terms.append(-1000 * max_dp)
 
+        # 🟢 WARD CONTINUITY
         if pass_level < 2:
             for d in doctors:
                 if d == 'GAUDENZI': continue
@@ -566,13 +580,14 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 model.AddBoolAnd([work[(d, day_idx, 'URG_AM')], work[(d, day_idx, 'URG_PM')]]).OnlyEnforceIf(urg_double)
                 objective_terms.append(10 * urg_double) 
 
+        # 🟢 HEAVY LIFETIME EQUITY GRAVITY
         for d in doctors:
             if d == 'GAUDENZI': continue
-            n_pts = int(lifetime[d]['nights'] * 10)
-            r_pts = int(lifetime[d]['reps'] * 10)
-            sat_pts = int(lifetime[d]['saturdays'] * 10) 
-            sun_pts = int(lifetime[d]['sundays'] * 10)
-            sh_pts = int(lifetime[d]['super_holidays'] * 10)
+            n_pts = int(lifetime[d]['nights'] * 50)           # 5x stronger penalty
+            r_pts = int(lifetime[d]['reps'] * 30)             # 3x stronger penalty
+            sat_pts = int(lifetime[d]['saturdays'] * 30)      # 3x stronger penalty
+            sun_pts = int(lifetime[d]['sundays'] * 30)        # 3x stronger penalty
+            sh_pts = int(lifetime[d]['super_holidays'] * 50)  # 5x stronger penalty
             
             for day_idx in range(num_days):
                 curr_date = roster_dates[day_idx]
@@ -645,7 +660,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                                 if d_str not in outpatient_configs.get(c_name, {}).get('days', []): is_active = False
                             if is_active: assigned_doc = "[UNCOVERED]"
                         if assigned_doc: df.loc[df["Shift"] == s, d_str] = assigned_doc
-                draft_grids[w_idx] = df.copy()
+            draft_grids[w_idx] = df.copy()
             
             warning_msg = ""
             if pass_level == 1: warning_msg = "⚠️ GEAR 2: Hard consecutive ward/weekend limits were relaxed to find a schedule."
@@ -1009,7 +1024,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Absences & Desiderate", "🔒 Forc
 with tab1:
     st.subheader("Daily Absences & Desiderate")
     st.markdown("""
-    💡 **Pro Tip:** You can quickly set someone on vacation by clicking the little blue square in the bottom-right corner of a cell and dragging it across the whole week!
+    💡 **Pro Tip:** You can quickly set someone on vacation by typing 'F', clicking the cell, grabbing the little blue square in the bottom-right corner, and dragging it across the whole week!
     - **F**: Ferie (Full day off, reduces monthly 34h target)
     - **X**: Desiderata Off (Full day off, does *not* reduce target)
     - **P**: Desiderata Mattina (No afternoon/night shifts)
@@ -1025,16 +1040,27 @@ with tab1:
             day_str = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
             col_displays.append(day_str)
         
-        df_dict = {"Doctor": current_doctors}
-        for i, d_str in enumerate(col_dates):
-            df_dict[col_displays[i]] = [st.session_state.absences_memory.get(d_str, {}).get(doc, "") for doc in current_doctors]
+        grid_key = f"abs_grid_w{w_idx}_{month_key}"
+        df_key = f"df_{grid_key}"
+        
+        if df_key not in st.session_state:
+            df_dict = {"Doctor": current_doctors}
+            for i, d_str in enumerate(col_dates):
+                df_dict[col_displays[i]] = [st.session_state.absences_memory.get(d_str, {}).get(doc, "") for doc in current_doctors]
+            st.session_state[df_key] = pd.DataFrame(df_dict)
             
-        df = pd.DataFrame(df_dict)
+        if list(st.session_state[df_key]["Doctor"]) != current_doctors:
+            df_dict = {"Doctor": current_doctors}
+            for i, d_str in enumerate(col_dates):
+                df_dict[col_displays[i]] = [st.session_state.absences_memory.get(d_str, {}).get(doc, "") for doc in current_doctors]
+            st.session_state[df_key] = pd.DataFrame(df_dict)
+
         col_config = {"Doctor": st.column_config.TextColumn("Doctor Name", disabled=True, pinned=True)}
         for i, d_str in enumerate(col_dates):
             col_config[col_displays[i]] = st.column_config.SelectboxColumn(col_displays[i], options=["", "F", "X", "P", "N"], width="small")
             
-        edited_df = st.data_editor(df, column_config=col_config, hide_index=True, use_container_width=True, key=f"abs_grid_w{w_idx}_{month_key}")
+        edited_df = st.data_editor(st.session_state[df_key], column_config=col_config, hide_index=True, use_container_width=True, key=grid_key)
+        st.session_state[df_key] = edited_df
         
         for idx, row in edited_df.iterrows():
             doc = row["Doctor"]
@@ -1050,10 +1076,10 @@ with tab2:
     
     dynamic_shift_options = ['🌟 SUPER HOLIDAY', 'WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT'] + [f'OUT_{c}_AM' for c in current_clinics]
 
-    if st.session_state.get("current_ym_manual") != f"{selected_year}-{selected_month}":
-        st.session_state["current_ym_manual"] = f"{selected_year}-{selected_month}"
+    if st.session_state.get("current_ym_manual") != month_key:
+        st.session_state["current_ym_manual"] = month_key
         for k in list(st.session_state.keys()):
-            if k.startswith("manual_grid_base_") or k.startswith("last_edited_manual_grid_"):
+            if k.startswith("df_manual_grid_base_") or k.startswith("editor_manual_grid_base_"):
                 del st.session_state[k]
 
     edited_manual_grids = {}
@@ -1062,54 +1088,47 @@ with tab2:
         week_dates = ui_roster_dates[week_start_idx : week_start_idx + 7]
         col_names = []
         for d in week_dates:
-            day_str = f"{d.strftime('%b %d')}"
-            if d.weekday() == 5: day_str += " Sa"
-            elif d.weekday() == 6: day_str += " Su"
+            day_str = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
             col_names.append(day_str)
         
         base_key = f"manual_grid_base_{month_key}_{w_idx}"
-        last_edited_key = f"last_edited_manual_grid_{w_idx}"
+        state_df_key = f"df_{base_key}"
         
-        if base_key not in st.session_state:
+        if state_df_key not in st.session_state:
             init_dict = {"Shift": dynamic_shift_options}
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
-            st.session_state[base_key] = pd.DataFrame(init_dict)
+            st.session_state[state_df_key] = pd.DataFrame(init_dict)
             
-        current_grid_state = st.session_state.get(last_edited_key, st.session_state[base_key])
-        
-        if list(current_grid_state["Shift"]) != dynamic_shift_options or list(current_grid_state.columns)[1:] != col_names:
+        if list(st.session_state[state_df_key]["Shift"]) != dynamic_shift_options or list(st.session_state[state_df_key].columns)[1:] != col_names:
             init_dict = {"Shift": dynamic_shift_options}
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
             new_df = pd.DataFrame(init_dict)
-            for idx, row in current_grid_state.iterrows():
+            for idx, row in st.session_state[state_df_key].iterrows():
                 s = row["Shift"]
                 if s in dynamic_shift_options:
                     for c in col_names:
-                        if c in current_grid_state.columns:
+                        if c in st.session_state[state_df_key].columns:
                             new_df.loc[new_df["Shift"] == s, c] = row[c]
-            st.session_state[base_key] = new_df
+            st.session_state[state_df_key] = new_df
 
         col_config_manual = {"Shift": st.column_config.TextColumn("Shift", disabled=True, pinned=True)}
         for i, d in enumerate(week_dates):
-            d_str = d.strftime("%Y-%m-%d")
             display_name = col_names[i]
             col_config_manual[display_name] = st.column_config.SelectboxColumn(display_name, options=["", "YES"] + current_doctors)
             
         edited_grid = st.data_editor(
-            st.session_state[base_key], 
+            st.session_state[state_df_key], 
             column_config=col_config_manual, 
             hide_index=True, 
             use_container_width=True,
             key=f"editor_{base_key}"
         )
-        st.session_state[last_edited_key] = edited_grid
+        st.session_state[state_df_key] = edited_grid
         edited_manual_grids[w_idx] = edited_grid
         st.markdown("---")
 
 with tab3:
     st.subheader("🏥 Operating Room & Outpatient Clinics Setup")
-    
-    act_grid_key = f"activities_base_{month_key}"
     
     edited_clinics_df = st.data_editor(
         st.session_state.clinics_base_df, 
@@ -1149,14 +1168,17 @@ with tab3:
     st.markdown("#### 📅 Schedule Specific Dates for This Month")
     st.markdown("Tick the exact dates where an OR or Clinic session is active. It is pre-filled based on your Recurring Schedule.")
     
+    act_grid_key = f"activities_base_{month_key}"
+    df_act_key = f"df_{act_grid_key}"
     activities = ["OR"] + current_clinics
     day_cols_act = [d.strftime('%b %d') + (" Sa" if d.weekday()==5 else " Su" if d.weekday()==6 else "") for d in ui_roster_dates]
     
-    act_col_config = {"Activity": st.column_config.TextColumn("Activity", disabled=True, pinned=True)}
-    for d_str in day_cols_act:
-        act_col_config[d_str] = st.column_config.CheckboxColumn(d_str, default=False, width="small")
-        
-    if act_grid_key not in st.session_state:
+    current_rec_str = json.dumps(st.session_state.recurrence_rules, sort_keys=True)
+    if st.session_state.get(f"last_rec_str_{month_key}") != current_rec_str:
+        st.session_state.pop(df_act_key, None)
+        st.session_state[f"last_rec_str_{month_key}"] = current_rec_str
+    
+    if df_act_key not in st.session_state:
         init_df = pd.DataFrame({"Activity": activities})
         for c in day_cols_act: init_df[c] = False
         
@@ -1170,35 +1192,23 @@ with tab3:
                     col_name = day_cols_act[col_idx]
                     init_df.loc[init_df["Activity"] == act, col_name] = True
                 
-        st.session_state[act_grid_key] = init_df
-        
-    curr_act_grid = st.session_state[act_grid_key]
-    if list(curr_act_grid["Activity"]) != activities or list(curr_act_grid.columns)[1:] != day_cols_act:
-        new_df = pd.DataFrame({"Activity": activities})
-        for c in day_cols_act: new_df[c] = False
-        for act in activities:
-            if act in list(curr_act_grid["Activity"]):
-                for c in day_cols_act:
-                    if c in curr_act_grid.columns: 
-                        new_df.loc[new_df["Activity"] == act, c] = curr_act_grid.loc[curr_act_grid["Activity"] == act, c].values[0]
-            else:
-                rules = st.session_state.recurrence_rules.get(act, {})
-                valid_dates = calculate_recurring_days(selected_year, selected_month, rules.get("weekdays", []), rules.get("weeks", ["All"]))
-                for vd in valid_dates:
-                    d_obj = datetime.datetime.strptime(vd, "%Y-%m-%d")
-                    if d_obj in ui_roster_dates:
-                        col_idx = ui_roster_dates.index(d_obj)
-                        new_df.loc[new_df["Activity"] == act, day_cols_act[col_idx]] = True
-                    
-        st.session_state[act_grid_key] = new_df
+        st.session_state[df_act_key] = init_df
+
+    if list(st.session_state[df_act_key]["Activity"]) != activities or list(st.session_state[df_act_key].columns)[1:] != day_cols_act:
+        st.session_state.pop(df_act_key, None)
+        st.rerun()
+
+    act_col_config = {"Activity": st.column_config.TextColumn("Activity", disabled=True, pinned=True)}
+    for d_str in day_cols_act:
+        act_col_config[d_str] = st.column_config.CheckboxColumn(d_str, default=False, width="small")
         
     edited_act_df = st.data_editor(
-        st.session_state[act_grid_key],
+        st.session_state[df_act_key],
         column_config=act_col_config,
         hide_index=True, use_container_width=True,
         key=f"editor_{act_grid_key}"
     )
-    st.session_state[act_grid_key] = edited_act_df
+    st.session_state[df_act_key] = edited_act_df
     
     or_days_formatted = []
     outpatient_setup = {c: {'days': [], 'capable': []} for c in current_clinics}
@@ -1281,7 +1291,7 @@ with tab4:
                     st.session_state.draft_month_key = month_key
                     if "generation_error" in st.session_state: del st.session_state["generation_error"]
                     for k in list(st.session_state.keys()):
-                        if k.startswith("draft_editor_"): del st.session_state[k]
+                        if k.startswith("df_draft_editor_week_"): del st.session_state[k]
                 else:
                     st.session_state.generation_error = warning
                     st.rerun()
@@ -1308,13 +1318,20 @@ with tab5:
                 display_name = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
                 col_config[d_str] = st.column_config.SelectboxColumn(display_name, options=["", "[UNCOVERED]"] + current_doctors)
                 
+            draft_key = f"draft_editor_week_{w_idx}_{month_key}"
+            df_draft_key = f"df_{draft_key}"
+            
+            if df_draft_key not in st.session_state:
+                st.session_state[df_draft_key] = st.session_state.generated_draft_grids[w_idx].copy()
+                
             edited_final_drafts[w_idx] = st.data_editor(
-                st.session_state.generated_draft_grids[w_idx], 
+                st.session_state[df_draft_key], 
                 column_config=col_config, 
                 hide_index=True, 
                 use_container_width=True,
-                key=f"draft_editor_week_{w_idx}_{month_key}"
+                key=draft_key
             )
+            st.session_state[df_draft_key] = edited_final_drafts[w_idx]
             st.markdown("---")
 
         st.markdown("### 📊 Live Fairness Dashboard")
