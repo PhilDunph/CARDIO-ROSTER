@@ -222,5 +222,127 @@
             "total_shifts": 0.0,
             "total_hours": 0.0
         }
+    },
+    "2026-06": {
+        "BURGAZZI": {
+            "nights": 2.0,
+            "doubles": 1.0,
+            "saturdays": 1.0,
+            "sundays": 0.0,
+            "holidays": 0.0,
+            "super_holidays": 0.0,
+            "golden_weekends": 4.0,
+            "reps": 1.0,
+            "total_shifts": 5.0,
+            "total_hours": 36.0
+        },
+        "CACCAMO": {
+            "nights": 1.0,
+            "doubles": 1.0,
+            "saturdays": 0.0,
+            "sundays": 0.0,
+            "holidays": 0.0,
+            "super_holidays": 0.0,
+            "golden_weekends": 5.0,
+            "reps": 1.0,
+            "total_shifts": 4.0,
+            "total_hours": 24.0
+        },
+        "CARDINALI": {
+            "nights": 0.0,
+            "doubles": 0.0,
+            "saturdays": 0.0,
+            "sundays": 0.0,
+            "holidays": 0.0,
+            "super_holidays": 0.0,
+            "golden_weekends": 5.0,
+            "reps": 0.0,
+            "total_shifts": 0.0,
+            "total_hours": 0.0
+        },
+        "CICCARELLI": {
+            "nights": 1.0,
+            "doubles": 1.0,
+            "saturdays": 0.0,
+            "sundays": 0.0,
+            "holidays": 0.0,
+            "super_holidays": 0.0,
+            "golden_weekends": 5.0,
+            "reps": 1.0,
+            "total_shifts": 4.0,
+            "total_hours": 24.0
+        },
+        "CICCHIRILLO": {
+            "nights": 1.0,
+            "doubles": 1.0,
+            "saturdays": 0.0,
+            "sundays": 0.0,
+            "holidays": 0.0,
+            "super_holidays": 0.0,
+            "golden_weekends": 4.0,
+            "reps": 1.0,
+            "total_shifts": 4.0,
+            "total_hours": 24.0
+        },
+        "FLORI": {
+            "nights": 1.0,
+            "doubles": 1.0,
+            "saturdays": 1.0,
+            "sundays": 1.0,
+            "holidays": 0.0,
+            "super_holidays": 0.0,
+            "golden_weekends": 4.0,
+            "reps": 1.0,
+            "total_shifts": 5.0,
+            "total_hours": 30.0
+        },
+        "FINIZIO": {
+            "nights": 0.0,
+            "doubles": 0.0,
+            "saturdays": 0.5,
+            "sundays": 0.0,
+            "holidays": 0.0,
+            "super_holidays": 0.0,
+            "golden_weekends": 4.0,
+            "reps": 1.0,
+            "total_shifts": 6.0,
+            "total_hours": 30.0
+        },
+        "NUCCI": {
+            "nights": 0.0,
+            "doubles": 1.0,
+            "saturdays": 0.5,
+            "sundays": 1.0,
+            "holidays": 0.0,
+            "super_holidays": 0.0,
+            "golden_weekends": 4.0,
+            "reps": 1.0,
+            "total_shifts": 9.0,
+            "total_hours": 48.0
+        },
+        "ROBERTI": {
+            "nights": 1.0,
+            "doubles": 1.0,
+            "saturdays": 0.0,
+            "sundays": 0.0,
+            "holidays": 0.0,
+            "super_holidays": 0.0,
+            "golden_weekends": 5.0,
+            "reps": 1.0,
+            "total_shifts": 4.0,
+            "total_hours": 24.0
+        },
+        "GAUDENZI": {
+            "nights": 0.0,
+            "doubles": 0.0,
+            "saturdays": 0.0,
+            "sundays": 0.0,
+            "holidays": 0.0,
+            "super_holidays": 0.0,
+            "golden_weekends": 5.0,
+            "reps": 0.0,
+            "total_shifts": 0.0,
+            "total_hours": 0.0
+        }
     }
 }
