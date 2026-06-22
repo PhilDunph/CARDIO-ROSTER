@@ -332,6 +332,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
         for d in doctors:
             if d == 'GAUDENZI': continue
             
+            # 🟢 UPDATED PRIVATE PRACTICE RULES
             pp_day_num = day_name_to_num.get(private_practice_afternoons.get(d, "").strip().capitalize(), -1)
             for day_idx in range(num_days):
                 weekday = roster_dates[day_idx].weekday()
@@ -340,8 +341,13 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                     for s in shifts:
                         if s.endswith('_PM') or s == 'REP_DAY': model.Add(work[(d, day_idx, s)] == 0)
                         
+                    # Incentivize nights and rep_nights on the actual PP evening
+                    objective_terms.append(500 * work[(d, day_idx, 'NIGHT')])
+                    objective_terms.append(300 * work[(d, day_idx, 'REP_NIGHT')])
+                        
                 next_day_date = roster_dates[day_idx] + datetime.timedelta(days=1)
                 if next_day_date.weekday() == pp_day_num:
+                    # Banned the night before
                     model.Add(work[(d, day_idx, 'NIGHT')] == 0)
                     model.Add(work[(d, day_idx, 'REP_NIGHT')] == 0)
                 
@@ -383,6 +389,26 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 if day_idx + 1 < num_days: model.Add(sum(work[(d, day_idx + 1, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
                 if day_idx + 2 < num_days: model.Add(sum(work[(d, day_idx + 2, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
 
+            doctor_gws = []
+            for week_start_idx in range(0, num_days, 7):
+                fri_idx, sat_idx, sun_idx = week_start_idx + 4, week_start_idx + 5, week_start_idx + 6
+                gw_var = model.NewBoolVar(f'gw_{d}_{week_start_idx}')
+                ruining_shifts = [work[(d, fri_idx, 'NIGHT')], work[(d, fri_idx, 'REP_NIGHT')]]
+                for s in shifts: ruining_shifts.extend([work[(d, sat_idx, s)], work[(d, sun_idx, s)]])
+                model.Add(sum(ruining_shifts) == 0).OnlyEnforceIf(gw_var)
+                model.Add(sum(ruining_shifts) > 0).OnlyEnforceIf(gw_var.Not())
+                doctor_gws.append(gw_var)
+                objective_terms.append(-5 * int(lifetime[d]['golden_weekends']) * gw_var)
+                
+            if pass_level < 2: model.Add(sum(doctor_gws) >= 1)
+
+        # 🟢 THE ALMOST-HARD PRE-VACATION RULE
+        for d, start_monday_str in leave_weeks:
+            if d in doctors and d != 'GAUDENZI' and start_monday_str in date_to_idx:
+                start_idx = date_to_idx[start_monday_str]
+                if 0 <= start_idx - 4 < num_days:
+                    objective_terms.append(5000 * work[(d, start_idx - 4, 'NIGHT')])
+
         weeks = [range(i, i + 7) for i in range(0, num_days, 7)]
 
         # 🟢 MIN-MAX FAIRNESS FOR HOUR DISTRIBUTION
@@ -409,10 +435,9 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 model.Add(dm <= 6)
             elif pass_level == 1:
                 model.Add(dm <= 18)
-            # Pass 2 and 3 have NO hard hour boundaries; min-max fairness takes over entirely
 
             objective_terms.append(-100 * dp)
-            objective_terms.append(-500 * dm) # Stronger penalty for deficits to encourage hitting 34h
+            objective_terms.append(-500 * dm) 
             
         max_dm = model.NewIntVar(0, 1000, 'max_dm')
         max_dp = model.NewIntVar(0, 1000, 'max_dp')
@@ -422,42 +447,54 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
             model.Add(diff_m_vars[d] <= max_dm)
             model.Add(diff_p_vars[d] <= max_dp)
             
-        # Squeeze the extremes to equalize everyone
         objective_terms.append(-2000 * max_dm)
         objective_terms.append(-1000 * max_dp)
 
-        # 🟢 WARD CONTINUITY (Drops off in Pass 2)
-        for d in doctors:
-            if d == 'GAUDENZI': continue
-            if doctor_capabilities.get(d, {}).get("Ward Preferred", False):
-                for day_idx in range(num_days):
-                    objective_terms.extend([20 * work[(d, day_idx, 'WARD_AM')], 20 * work[(d, day_idx, 'WARD_PM')]])
+        # 🟢 WARD CONTINUITY
+        if pass_level < 2:
+            for d in doctors:
+                if d == 'GAUDENZI': continue
+                if doctor_capabilities.get(d, {}).get("Ward Preferred", False):
+                    for day_idx in range(num_days):
+                        objective_terms.extend([20 * work[(d, day_idx, 'WARD_AM')], 20 * work[(d, day_idx, 'WARD_PM')]])
 
-            for day_idx in range(num_days - 1):
-                am_pm = model.NewBoolVar('')
-                model.AddBoolAnd([work[(d, day_idx, 'WARD_AM')], work[(d, day_idx+1, 'WARD_PM')]]).OnlyEnforceIf(am_pm)
-                objective_terms.append(30 * am_pm) 
-                pm_am = model.NewBoolVar('')
-                model.AddBoolAnd([work[(d, day_idx, 'WARD_PM')], work[(d, day_idx+1, 'WARD_AM')]]).OnlyEnforceIf(pm_am)
-                objective_terms.append(30 * pm_am)
-                
-            for w_idx in range(len(weeks)):
-                ward_active = model.NewBoolVar('')
-                model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx] for s in ['WARD_AM', 'WARD_PM']) > 0).OnlyEnforceIf(ward_active)
-                model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx] for s in ['WARD_AM', 'WARD_PM']) == 0).OnlyEnforceIf(ward_active.Not())
-                objective_terms.append(-200 * ward_active)
-                
-                if w_idx < len(weeks) - 1:
-                    ward_next_active = model.NewBoolVar('')
-                    model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx+1] for s in ['WARD_AM', 'WARD_PM']) > 0).OnlyEnforceIf(ward_next_active)
-                    model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx+1] for s in ['WARD_AM', 'WARD_PM']) == 0).OnlyEnforceIf(ward_next_active.Not())
-                    consecutive_ward = model.NewBoolVar('')
-                    model.AddBoolAnd([ward_active, ward_next_active]).OnlyEnforceIf(consecutive_ward)
+            for d in doctors:
+                if d == 'GAUDENZI': continue
+                for day_idx in range(num_days - 1):
+                    am_pm = model.NewBoolVar('')
+                    model.AddBoolAnd([work[(d, day_idx, 'WARD_AM')], work[(d, day_idx+1, 'WARD_PM')]]).OnlyEnforceIf(am_pm)
+                    objective_terms.append(150 * am_pm)  # BOOSTED
+                    pm_am = model.NewBoolVar('')
+                    model.AddBoolAnd([work[(d, day_idx, 'WARD_PM')], work[(d, day_idx+1, 'WARD_AM')]]).OnlyEnforceIf(pm_am)
+                    objective_terms.append(150 * pm_am)  # BOOSTED
                     
-                    if pass_level == 0:
-                        model.Add(consecutive_ward == 0) # Hard rule
-                    else:
-                        objective_terms.append(-800 * consecutive_ward) # Soft rule
+                for w_idx in range(len(weeks)):
+                    ward_active = model.NewBoolVar('')
+                    model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx] for s in ['WARD_AM', 'WARD_PM']) > 0).OnlyEnforceIf(ward_active)
+                    model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx] for s in ['WARD_AM', 'WARD_PM']) == 0).OnlyEnforceIf(ward_active.Not())
+                    objective_terms.append(-400 * ward_active) # BOOSTED
+                    
+                    if w_idx < len(weeks) - 1:
+                        ward_next_active = model.NewBoolVar('')
+                        model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx+1] for s in ['WARD_AM', 'WARD_PM']) > 0).OnlyEnforceIf(ward_next_active)
+                        model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx+1] for s in ['WARD_AM', 'WARD_PM']) == 0).OnlyEnforceIf(ward_next_active.Not())
+                        consecutive_ward = model.NewBoolVar('')
+                        model.AddBoolAnd([ward_active, ward_next_active]).OnlyEnforceIf(consecutive_ward)
+                        
+                        if pass_level == 0:
+                            model.Add(consecutive_ward == 0)
+                        else:
+                            objective_terms.append(-2000 * consecutive_ward) # BOOSTED
+
+        for day_idx in sunday_equivalent_days:
+            for d in doctors:
+                if d == 'GAUDENZI': continue
+                ward_double = model.NewBoolVar('')
+                model.AddBoolAnd([work[(d, day_idx, 'WARD_AM')], work[(d, day_idx, 'WARD_PM')]]).OnlyEnforceIf(ward_double)
+                objective_terms.append(10 * ward_double) 
+                urg_double = model.NewBoolVar('')
+                model.AddBoolAnd([work[(d, day_idx, 'URG_AM')], work[(d, day_idx, 'URG_PM')]]).OnlyEnforceIf(urg_double)
+                objective_terms.append(10 * urg_double) 
 
         # 🟢 LIFETIME EQUITY GRAVITY
         for d in doctors:
@@ -529,8 +566,8 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                         for d in doctors:
                             if solver.Value(work[(d, day_idx, s)]) == 1:
                                 df.loc[df["Shift"] == s, d_str] = d
-                draft_grids[w_idx] = df
-                
+            draft_grids[w_idx] = df
+            
             warning_msg = ""
             if pass_level == 1: warning_msg = "⚠️ GEAR 2: Hard consecutive ward limits were relaxed to prevent an hour deficit."
             elif pass_level == 2: warning_msg = "⚠️ GEAR 3: Monthly hour constraints were loosened completely. Equity is handled via Min-Max fairness."
@@ -557,6 +594,7 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
     it_holidays = holidays.IT(years=[year-1, year, year+1])
     
     ledger = load_historical_counters()
+    lifetime = {d: get_lifetime_stats(ledger, d) for d in doctors}
 
     sunday_equivalent_days = []
     for day_idx, current_date in enumerate(roster_dates):
@@ -910,37 +948,28 @@ with tab2:
     
     dynamic_shift_options = ['🌟 SUPER HOLIDAY', 'WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT'] + [f'OUT_{c}_AM' for c in current_clinics]
 
-    if st.session_state.get("current_ym_manual") != f"{selected_year}-{selected_month}":
-        st.session_state["current_ym_manual"] = f"{selected_year}-{selected_month}"
-        for k in list(st.session_state.keys()):
-            if k.startswith("manual_grid_base_") or k.startswith("last_edited_manual_grid_"):
-                del st.session_state[k]
-
     edited_manual_grids = {}
     for w_idx, week_start_idx in enumerate(range(0, len(ui_roster_dates), 7)):
         st.markdown(f"#### Forced Week {w_idx + 1}")
         week_dates = ui_roster_dates[week_start_idx : week_start_idx + 7]
         col_names = [d.strftime("%Y-%m-%d") for d in week_dates]
         
-        base_key = f"manual_grid_base_{w_idx}"
-        last_edited_key = f"last_edited_manual_grid_{w_idx}"
+        base_key = f"manual_grid_base_{month_key}_{w_idx}"
         
         if base_key not in st.session_state:
             init_dict = {"Shift": dynamic_shift_options}
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
             st.session_state[base_key] = pd.DataFrame(init_dict)
             
-        current_grid_state = st.session_state.get(last_edited_key, st.session_state[base_key])
-        
-        if list(current_grid_state["Shift"]) != dynamic_shift_options:
-            init_dict = {"Shift": dynamic_shift_options}
-            for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
-            new_df = pd.DataFrame(init_dict)
-            for idx, row in current_grid_state.iterrows():
+        if list(st.session_state[base_key]["Shift"]) != dynamic_shift_options:
+            new_df = pd.DataFrame({"Shift": dynamic_shift_options})
+            for c in col_names: new_df[c] = ""
+            last_edited_man = st.session_state.get(f"editor_{base_key}", st.session_state[base_key])
+            for idx, row in last_edited_man.iterrows():
                 s = row["Shift"]
                 if s in dynamic_shift_options:
                     for c in col_names:
-                        if c in current_grid_state.columns:
+                        if c in last_edited_man.columns:
                             new_df.loc[new_df["Shift"] == s, c] = row[c]
             st.session_state[base_key] = new_df
 
@@ -955,9 +984,8 @@ with tab2:
             column_config=col_config_manual, 
             hide_index=True, 
             use_container_width=True,
-            key=f"editor_manual_grid_week_{w_idx}"
+            key=f"editor_{base_key}"
         )
-        st.session_state[last_edited_key] = edited_grid
         edited_manual_grids[w_idx] = edited_grid
         st.markdown("---")
 
@@ -1013,7 +1041,6 @@ with tab3:
         init_df = pd.DataFrame({"Activity": activities})
         for c in day_cols: init_df[c] = False
         
-        # Pre-fill based on recurrence rules!
         for act in activities:
             rules = st.session_state.recurrence_rules.get(act, {})
             valid_dates = calculate_recurring_days(selected_year, selected_month, rules.get("weekdays", []), rules.get("weeks", ["All"]))
@@ -1121,8 +1148,6 @@ with tab4:
                     st.success("✅ Draft generated successfully! Go to **Tab 5 (🚀 Edit & Publish)** to review, modify, and publish the final Excel.")
                     if warning: st.warning(warning)
                     st.session_state.generated_draft_grids = draft_grids
-                    for k in list(st.session_state.keys()):
-                        if k.startswith("draft_editor_"): del st.session_state[k]
                 else:
                     st.error(f"❌ {warning}")
 
