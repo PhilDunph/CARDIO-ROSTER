@@ -105,8 +105,11 @@ def get_roster_dates(year, month):
     cal = calendar.Calendar(firstweekday=0) 
     mondays = []
     for week in cal.monthdatescalendar(year, month):
-        if week[0].month == month:
+        if any(d.month == month for d in week):
             if week[0] not in mondays: mondays.append(week[0])
+    
+    if not mondays: return []
+    
     start_date = mondays[0]
     end_date = mondays[-1] + datetime.timedelta(days=6)
     roster_dates = []
@@ -118,24 +121,26 @@ def get_roster_dates(year, month):
 
 def calculate_recurring_days(year, month, weekdays, weeks_list):
     if not weekdays or not weeks_list: return []
-    cal = calendar.monthcalendar(year, month)
+    roster_dates = get_roster_dates(year, month)
+    weeks = [roster_dates[i:i+7] for i in range(0, len(roster_dates), 7)]
+    
     day_map = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 'Friday': 4, 'Saturday': 5, 'Sunday': 6}
     target_wds = [day_map[w] for w in weekdays if w in day_map]
     
     valid_dates = []
-    for wd in target_wds:
-        occurrences = [week[wd] for week in cal if week[wd] != 0]
-        for i, day in enumerate(occurrences):
-            week_idx = i + 1
-            is_valid = False
-            if "All" in weeks_list: is_valid = True
-            elif "1st" in weeks_list and week_idx == 1: is_valid = True
-            elif "2nd" in weeks_list and week_idx == 2: is_valid = True
-            elif "3rd" in weeks_list and week_idx == 3: is_valid = True
-            elif "4th" in weeks_list and week_idx == 4: is_valid = True
-            elif "5th" in weeks_list and week_idx == 5: is_valid = True
-            
-            if is_valid: valid_dates.append(datetime.date(year, month, day).strftime("%Y-%m-%d"))
+    for week_idx, week in enumerate(weeks):
+        w_num = week_idx + 1
+        is_valid = False
+        if "All" in weeks_list: is_valid = True
+        elif "1st" in weeks_list and w_num == 1: is_valid = True
+        elif "2nd" in weeks_list and w_num == 2: is_valid = True
+        elif "3rd" in weeks_list and w_num == 3: is_valid = True
+        elif "4th" in weeks_list and w_num == 4: is_valid = True
+        elif "5th" in weeks_list and w_num == 5: is_valid = True
+        
+        if is_valid:
+            for wd in target_wds:
+                valid_dates.append(week[wd].strftime("%Y-%m-%d"))
     return valid_dates
 
 def get_master_name(s):
@@ -160,6 +165,7 @@ def compute_monthly_stats(doc_schedule, num_days, roster_dates, day_active, it_h
             rep_shifts = [s for s in worked_today if s in ['REP_DAY', 'REP_NIGHT']]
             
             for s in worked_today:
+                if s == "[UNCOVERED]": continue
                 monthly_stats[doc]['total_shifts'] += 1
                 if s == 'NIGHT': monthly_stats[doc]['total_hours'] += 12 
                 elif 'REP' in s: monthly_stats[doc]['total_hours'] += 0 
@@ -198,9 +204,14 @@ def compute_monthly_stats(doc_schedule, num_days, roster_dates, day_active, it_h
 # 3. DRAFT GENERATOR (Math Engine Only)
 # ==========================================
 def generate_draft_schedule(year, month, conditional_or_days, manual_festivities, manual_super_holidays, manual_assignments,
-                            doctor_capabilities, outpatient_configs, daily_absences, private_practice_afternoons, doctors_list, debug_mode=False):
+                            doctor_capabilities, outpatient_configs, daily_absences, private_practice_afternoons, 
+                            doctors_list, debug_mode=False, resolution_toggles=None):
     
     if manual_super_holidays is None: manual_super_holidays = []
+    if resolution_toggles is None: resolution_toggles = {}
+    
+    allow_understaffing = resolution_toggles.get("allow_understaffing", False)
+    ignore_34h = resolution_toggles.get("ignore_34h", False)
     
     doctors = doctors_list
     roster_dates = get_roster_dates(year, month)
@@ -220,14 +231,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
     for (d, date_str, s) in manual_assignments:
         if date_str in date_to_idx and d in doctors: manual_keys.add((d, date_to_idx[date_str], s))
 
-    fully_off_dates = []
-    for (d, date_str), val in daily_absences.items():
-        if val in ['F', 'X']: fully_off_dates.append(date_str)
-                    
-    day_counts = Counter(fully_off_dates)
-    overlaps = [date for date, count in day_counts.items() if count > 1]
-    overlap_warning = f"⚠️ Notice: Multiple doctors requested completely off (F/X) on: {', '.join(overlaps)}" if overlaps else ""
-
     doc_unavailable_set = {d: set() for d in doctors}
     doc_contract_off_set = {d: set() for d in doctors}
 
@@ -242,18 +245,50 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
     for out_type in outpatient_configs.keys(): shifts.append(f'OUT_{out_type}_AM')
     day_active = [s for s in shifts if s not in ['NIGHT', 'REP_NIGHT', 'REP_DAY']]
     
+    # 🟢 DEEP X-RAY PRE-FLIGHT SCANNER
     total_available_hours = 0
+    diagnostic_errors = []
+    
     for day_idx in range(num_days):
         current_date_str = roster_dates[day_idx].strftime("%Y-%m-%d")
-        if day_idx in sunday_equivalent_days: total_available_hours += 24
+        req_shifts = 0
+        if day_idx in sunday_equivalent_days:
+            req_shifts = 3 
+            total_available_hours += 24
         else:
+            req_shifts = 5 
             total_available_hours += 36
-            if current_date_str in conditional_or_days: total_available_hours += 6
+            if current_date_str in conditional_or_days:
+                req_shifts += 1
+                total_available_hours += 6
+                or_capable_docs = [d for d in doctors if d != 'GAUDENZI' and doctor_capabilities.get(d, {}).get("OR Capable", False) and current_date_str not in doc_unavailable_set[d]]
+                if not or_capable_docs and not any((d == 'GAUDENZI' and day == day_idx and s == 'OR_AM') for (d, day, s) in manual_keys):
+                    diagnostic_errors.append(f"**{current_date_str}:** Operating Room is scheduled, but NO OR-capable doctors are available.")
+                
             for out_type, config in outpatient_configs.items():
-                if current_date_str in config['days']: total_available_hours += 6
+                if current_date_str in config['days']:
+                    req_shifts += 1
+                    total_available_hours += 6
+                    clin_capable = [d for d in doctors if d != 'GAUDENZI' and d in config['capable'] and current_date_str not in doc_unavailable_set[d]]
+                    if not clin_capable and not any((d == 'GAUDENZI' and day == day_idx and s == f'OUT_{out_type}_AM') for (d, day, s) in manual_keys):
+                        diagnostic_errors.append(f"**{current_date_str}:** Clinic {out_type} is scheduled, but NO capable doctors are available.")
+
+        unavailable = sum(1 for d in doctors if d != 'GAUDENZI' and current_date_str in doc_unavailable_set[d])
+        available_bodies = len([d for d in doctors if d != 'GAUDENZI']) - unavailable
+        if any((d == 'GAUDENZI' and day == day_idx) for (d, day, s) in manual_keys): available_bodies += 1
+        
+        if available_bodies < req_shifts:
+            diagnostic_errors.append(f"**{current_date_str}:** You scheduled {req_shifts} shifts, but only {available_bodies} doctors are available to work.")
+
+    if diagnostic_errors and not allow_understaffing and not debug_mode:
+        return False, None, "### 🚨 Deep Diagnostic Pre-Flight Failed\nWe caught several mathematical impossibilities before generating:\n\n" + "\n".join(f"- {err}" for err in diagnostic_errors) + "\n\n*Use the **Resolution Options** below to override these rules.*"
 
     gaudenzi_manual_active_hrs = sum(12 if s == 'NIGHT' else (6 if 'REP' not in s else 0) for (d, day, s) in manual_keys if d == 'GAUDENZI')
     total_available_hours -= gaudenzi_manual_active_hrs
+    
+    total_required_hours_min = sum(max(0, int((doc_contract_days[d] / 7.0) * 34) - 12) for d in doctors if d != 'GAUDENZI')
+    if total_required_hours_min > total_available_hours and not debug_mode and not ignore_34h:
+        return False, None, f"### 🚨 Contractual Hour Deficit\nThe 34h clinical minimum requires at least {total_required_hours_min}h total from active doctors, but department only has {total_available_hours}h scheduled.\n\n*Solution: Add clinics, or use the Resolution Options below to ignore the 34h rule.*"
 
     # 🟢 THE CASCADING ENGINE
     pass_levels = [3] if debug_mode else [0, 1, 2, 3]
@@ -297,32 +332,42 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
             model.AddExactlyOne(work[(d, day_idx, 'NIGHT')] for d in doctors)
             model.AddExactlyOne(work[(d, day_idx, 'REP_NIGHT')] for d in doctors)
             
+            def add_shift_constraint(s_name, allowed_docs):
+                if allow_understaffing and s_name not in ['NIGHT', 'REP_NIGHT']:
+                    covered = model.NewBoolVar(f'cov_{day_idx}_{s_name}')
+                    model.Add(sum(work[(d, day_idx, s_name)] for d in allowed_docs) == covered)
+                    objective_terms.append(100000 * covered) 
+                    for d in doctors:
+                        if d not in allowed_docs: model.Add(work[(d, day_idx, s_name)] == 0)
+                else:
+                    model.AddExactlyOne(work[(d, day_idx, s_name)] for d in allowed_docs)
+                    for d in doctors:
+                        if d not in allowed_docs: model.Add(work[(d, day_idx, s_name)] == 0)
+
             if day_idx not in sunday_equivalent_days: 
-                model.AddExactlyOne(work[(d, day_idx, 'WARD_AM')] for d in doctors)
-                model.AddExactlyOne(work[(d, day_idx, 'URG_AM')] for d in doctors)
-                model.AddExactlyOne(work[(d, day_idx, 'WARD_PM')] for d in doctors)
-                model.AddExactlyOne(work[(d, day_idx, 'URG_PM')] for d in doctors)
+                add_shift_constraint('WARD_AM', doctors)
+                add_shift_constraint('URG_AM', doctors)
+                add_shift_constraint('WARD_PM', doctors)
+                add_shift_constraint('URG_PM', doctors)
                 for d in doctors: model.Add(work[(d, day_idx, 'REP_DAY')] == 0)
                 
                 if current_date_str in conditional_or_days:
-                    model.AddExactlyOne(work[(d, day_idx, 'OR_AM')] for d in doctors)
-                    for d in doctors:
-                        if not doctor_capabilities.get(d, {}).get("OR Capable", False): model.Add(work[(d, day_idx, 'OR_AM')] == 0)
+                    capable_docs = [d for d in doctors if doctor_capabilities.get(d, {}).get("OR Capable", False) or (d == 'GAUDENZI')]
+                    add_shift_constraint('OR_AM', capable_docs)
                 else:
                     for d in doctors: model.Add(work[(d, day_idx, 'OR_AM')] == 0)
                     
                 for out_type, config in outpatient_configs.items():
                     s_name = f'OUT_{out_type}_AM'
                     if current_date_str in config['days']:
-                        model.AddExactlyOne(work[(d, day_idx, s_name)] for d in doctors)
-                        for d in doctors:
-                            if d not in config['capable']: model.Add(work[(d, day_idx, s_name)] == 0)
+                        capable_docs = [d for d in doctors if d in config['capable'] or (d == 'GAUDENZI')]
+                        add_shift_constraint(s_name, capable_docs)
                     else:
                         for d in doctors: model.Add(work[(d, day_idx, s_name)] == 0)
             else: 
-                model.AddExactlyOne(work[(d, day_idx, 'WARD_AM')] for d in doctors) 
-                model.AddExactlyOne(work[(d, day_idx, 'WARD_PM')] for d in doctors) 
-                model.AddExactlyOne(work[(d, day_idx, 'REP_DAY')] for d in doctors)
+                add_shift_constraint('WARD_AM', doctors)
+                add_shift_constraint('WARD_PM', doctors)
+                add_shift_constraint('REP_DAY', doctors)
                 for d in doctors:
                     for s in shifts:
                         if s not in ['WARD_AM', 'WARD_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT']: model.Add(work[(d, day_idx, s)] == 0)
@@ -339,14 +384,11 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 if weekday == pp_day_num:
                     for s in shifts:
                         if s.endswith('_PM') or s == 'REP_DAY': model.Add(work[(d, day_idx, s)] == 0)
-                        
-                    # Incentivize Night & Rep_Night on PP day
                     objective_terms.append(500 * work[(d, day_idx, 'NIGHT')])
                     objective_terms.append(300 * work[(d, day_idx, 'REP_NIGHT')])
                         
                 next_day_date = roster_dates[day_idx] + datetime.timedelta(days=1)
                 if next_day_date.weekday() == pp_day_num:
-                    # Banned the night before PP
                     model.Add(work[(d, day_idx, 'NIGHT')] == 0)
                     model.Add(work[(d, day_idx, 'REP_NIGHT')] == 0)
                 
@@ -364,6 +406,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                     model.Add(sum(work[(d, day_idx + 1, s)] for s in day_active) == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_NIGHT')])
                     model.Add(work[(d, day_idx + 1, 'REP_DAY')] == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_NIGHT')])
                 
+                # 🟢 BOSS LOGIC: THE MONTO PACKAGE (Pre-Night Double + Rep Night)
                 if day_idx < num_days - 1:
                     is_pre_night = work[(d, day_idx + 1, 'NIGHT')]
                     
@@ -375,9 +418,15 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                     pre_night_double = model.NewBoolVar('')
                     model.Add(sum(work[(d, day_idx, s)] for s in day_active) == 2).OnlyEnforceIf(pre_night_double)
                     model.Add(sum(work[(d, day_idx, s)] for s in day_active) != 2).OnlyEnforceIf(pre_night_double.Not())
+                    
                     ideal_pre_night = model.NewBoolVar('')
                     model.AddBoolAnd([is_pre_night, pre_night_double, work[(d, day_idx, 'REP_NIGHT')]]).OnlyEnforceIf(ideal_pre_night)
-                    objective_terms.append(1000 * ideal_pre_night)
+                    
+                    if pass_level == 0:
+                        # Hard lock the "Monto Package" in Gear 1 unless physically impossible
+                        model.Add(ideal_pre_night == 1).OnlyEnforceIf(is_pre_night)
+                    else:
+                        objective_terms.append(2000 * ideal_pre_night)
                 else:
                     if pass_level < 3:
                         if day_idx not in sunday_equivalent_days: model.Add(sum(work[(d, day_idx, s)] for s in day_active) <= 1)
@@ -388,6 +437,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 if day_idx + 1 < num_days: model.Add(sum(work[(d, day_idx + 1, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
                 if day_idx + 2 < num_days: model.Add(sum(work[(d, day_idx + 2, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
 
+            # 🟢 BOSS LOGIC: THE WEEKEND PENDULUM
             doctor_gws = []
             for week_start_idx in range(0, num_days, 7):
                 fri_idx, sat_idx, sun_idx = week_start_idx + 4, week_start_idx + 5, week_start_idx + 6
@@ -399,7 +449,23 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 doctor_gws.append(gw_var)
                 objective_terms.append(-5 * int(lifetime[d]['golden_weekends']) * gw_var)
                 
-            if pass_level < 2: model.Add(sum(doctor_gws) >= 1)
+                # Check consecutive weekends (Alternating Rule)
+                if week_start_idx >= 7:
+                    prev_gw_var = doctor_gws[-2]
+                    
+                    two_gws = model.NewBoolVar('')
+                    model.AddBoolAnd([gw_var, prev_gw_var]).OnlyEnforceIf(two_gws)
+                    
+                    two_works = model.NewBoolVar('')
+                    model.AddBoolAnd([gw_var.Not(), prev_gw_var.Not()]).OnlyEnforceIf(two_works)
+                    
+                    if pass_level == 0:
+                        # In perfect gear, strictly forbid working two weekends in a row, or getting two off in a row.
+                        model.Add(two_works == 0)
+                        model.Add(two_gws == 0)
+                    else:
+                        objective_terms.append(-2000 * two_works)
+                        objective_terms.append(-1000 * two_gws)
 
         # 🟢 PRE-VACATION NIGHT (Absolute Priority)
         for d in doctors:
@@ -412,7 +478,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                         if 0 <= week_start_idx - 1 < num_days:
                             for s in shifts: model.Add(work[(d, week_start_idx - 1, s)] == 0)
                         if 0 <= week_start_idx - 4 < num_days:
-                            # 5000 point absolute mathematical priority
                             objective_terms.append(5000 * work[(d, week_start_idx - 4, 'NIGHT')])
 
         weeks = [range(i, i + 7) for i in range(0, num_days, 7)]
@@ -437,9 +502,9 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
             diff_p_vars[d] = dp
             diff_m_vars[d] = dm
             
-            if pass_level == 0:
+            if pass_level == 0 and not ignore_34h:
                 model.Add(dm <= 6)
-            elif pass_level == 1:
+            elif pass_level == 1 and not ignore_34h:
                 model.Add(dm <= 18)
 
             objective_terms.append(-100 * dp)
@@ -469,16 +534,16 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 for day_idx in range(num_days - 1):
                     am_pm = model.NewBoolVar('')
                     model.AddBoolAnd([work[(d, day_idx, 'WARD_AM')], work[(d, day_idx+1, 'WARD_PM')]]).OnlyEnforceIf(am_pm)
-                    objective_terms.append(150 * am_pm)  # BOOSTED
+                    objective_terms.append(150 * am_pm) 
                     pm_am = model.NewBoolVar('')
                     model.AddBoolAnd([work[(d, day_idx, 'WARD_PM')], work[(d, day_idx+1, 'WARD_AM')]]).OnlyEnforceIf(pm_am)
-                    objective_terms.append(150 * pm_am)  # BOOSTED
+                    objective_terms.append(150 * pm_am)
                     
                 for w_idx in range(len(weeks)):
                     ward_active = model.NewBoolVar('')
                     model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx] for s in ['WARD_AM', 'WARD_PM']) > 0).OnlyEnforceIf(ward_active)
                     model.Add(sum(work[(d, day_idx, s)] for day_idx in weeks[w_idx] for s in ['WARD_AM', 'WARD_PM']) == 0).OnlyEnforceIf(ward_active.Not())
-                    objective_terms.append(-400 * ward_active) # BOOSTED
+                    objective_terms.append(-400 * ward_active)
                     
                     if w_idx < len(weeks) - 1:
                         ward_next_active = model.NewBoolVar('')
@@ -490,7 +555,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                         if pass_level == 0:
                             model.Add(consecutive_ward == 0)
                         else:
-                            objective_terms.append(-2000 * consecutive_ward) # BOOSTED
+                            objective_terms.append(-2000 * consecutive_ward)
 
         for day_idx in sunday_equivalent_days:
             for d in doctors:
@@ -569,21 +634,33 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                     d_str = d_date.strftime("%Y-%m-%d")
                     if day_idx >= num_days: continue
                     for s in shifts:
+                        assigned_doc = ""
                         for d in doctors:
                             if solver.Value(work[(d, day_idx, s)]) == 1:
-                                df.loc[df["Shift"] == s, d_str] = d
+                                assigned_doc = d
+                        if not assigned_doc and allow_understaffing and s not in ['NIGHT', 'REP_NIGHT']:
+                            is_active = True
+                            if s == 'OR_AM' and d_str not in conditional_or_days: is_active = False
+                            elif s == 'REP_DAY' and day_idx not in sunday_equivalent_days: is_active = False
+                            elif s.startswith('OUT_'):
+                                c_name = s.replace('OUT_', '').replace('_AM', '')
+                                if d_str not in outpatient_configs.get(c_name, {}).get('days', []): is_active = False
+                            if is_active: assigned_doc = "[UNCOVERED]"
+                        if assigned_doc: df.loc[df["Shift"] == s, d_str] = assigned_doc
             draft_grids[w_idx] = df
             
             warning_msg = ""
-            if pass_level == 1: warning_msg = "⚠️ GEAR 2: Hard consecutive ward limits were relaxed to prevent an hour deficit."
+            if pass_level == 1: warning_msg = "⚠️ GEAR 2: Hard consecutive ward/weekend limits were relaxed to find a schedule."
             elif pass_level == 2: warning_msg = "⚠️ GEAR 3: Monthly hour constraints were loosened completely. Equity is handled via Min-Max fairness."
-            elif pass_level == 3: warning_msg = "⚠️ SURVIVAL GEAR: Maximum shift caps removed. Verify fairness manually."
-            elif pass_level == 4: warning_msg = "🚨 DEBUG MODE: All equity limits, max deficits, and 34h floors disabled."
+            elif pass_level == 3: warning_msg = "⚠️ SURVIVAL GEAR: Maximum shift caps and Monto packages removed. Verify manually."
+            elif pass_level == 4: warning_msg = "🚨 DEBUG MODE: All equity limits, max deficits, and floors disabled."
             
+            if allow_understaffing or ignore_34h:
+                warning_msg += "\n\n🛠️ **RESOLUTION MODE ACTIVE:** Overrides were used to force completion."
             if overlap_warning: warning_msg += f"\n\n{overlap_warning}"
             return True, draft_grids, warning_msg
 
-    return False, None, "🛑 Constraints are too tight. Even after shifting to Survival Gear, the algorithm cannot find a legally compliant schedule. Use Emergency Debug Mode."
+    return False, None, "🛑 Constraints are too tight. Even after shifting to Survival Gear, the algorithm cannot find a schedule. Try using the Resolution Options below."
 
 # ==========================================
 # 4. EXPORT ENGINE (Reads Edited UI Draft)
@@ -600,7 +677,6 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
     it_holidays = holidays.IT(years=[year-1, year, year+1])
     
     ledger = load_historical_counters()
-    lifetime = {d: get_lifetime_stats(ledger, d) for d in doctors}
 
     sunday_equivalent_days = []
     for day_idx, current_date in enumerate(roster_dates):
@@ -650,6 +726,7 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
     shift_format = workbook.add_format({'bold': True, 'bg_color': '#F5F5F5', 'border': 1, 'align': 'left'})
     empty_border = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
     gray_dash_format = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_color': '#D3D3D3'})
+    uncovered_format = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'font_color': 'red', 'bold': True})
     
     doc_formats = {}
     for d in doctors:
@@ -702,11 +779,12 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
                         continue
                     
                     assigned_doc = ""
-                    for d in doctors:
-                        if s in doc_schedule[d][day_idx]: assigned_doc = d
+                    ui_val = str(edited_weekly_grids[w_idx].loc[edited_weekly_grids[w_idx]["Shift"] == s, roster_dates[day_idx].strftime("%Y-%m-%d")].values[0]).strip().upper()
                     
-                    if assigned_doc:
-                        worksheet.write(row_cursor, i + 1, assigned_doc, doc_formats[assigned_doc])
+                    if ui_val == "[UNCOVERED]":
+                        worksheet.write(row_cursor, i + 1, "UNCOVERED", uncovered_format)
+                    elif ui_val in doctors:
+                        worksheet.write(row_cursor, i + 1, ui_val, doc_formats[ui_val])
                     else:
                         is_active_today = True
                         d_str = roster_dates[day_idx].strftime("%Y-%m-%d")
@@ -830,13 +908,13 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
 # ==========================================
 st.set_page_config(page_title="Cardiology Scheduler", page_icon="🩺", layout="wide")
 
-if "app_initialized_v5" not in st.session_state:
+if "app_initialized_v6" not in st.session_state:
     settings = load_persistent_settings()
     st.session_state.clinics_base_df = pd.DataFrame({"Clinic Name": settings["clinics"]})
     st.session_state.docs_base_df = pd.DataFrame(settings["docs_base"]) 
     st.session_state.cap_base_df = pd.DataFrame(settings["capabilities"]) 
     st.session_state.recurrence_rules = settings.get("recurrence", {})
-    st.session_state.app_initialized_v5 = True
+    st.session_state.app_initialized_v6 = True
 
 current_clinics = [str(c).strip().upper().replace(" ", "_") for c in st.session_state.clinics_base_df["Clinic Name"].dropna().unique() if str(c).strip()]
 
@@ -898,12 +976,10 @@ with st.sidebar:
 
 month_key = f"{selected_year}-{selected_month:02d}"
 ui_roster_dates = get_roster_dates(selected_year, selected_month)
-num_days_in_month = calendar.monthrange(selected_year, selected_month)[1]
-month_dates = [datetime.date(selected_year, selected_month, d) for d in range(1, num_days_in_month + 1)]
 
 day_cols = []
-for d in month_dates:
-    day_str = str(d.day)
+for d in ui_roster_dates:
+    day_str = f"{d.strftime('%b %d')}"
     if d.weekday() == 5: day_str += " Sa"
     elif d.weekday() == 6: day_str += " Su"
     day_cols.append(day_str)
@@ -931,7 +1007,7 @@ with tab1:
         for c in day_cols: init_df[c] = ""
         st.session_state[abs_grid_key] = init_df
         
-    if list(st.session_state[abs_grid_key]["Doctor"]) != current_doctors:
+    if list(st.session_state[abs_grid_key]["Doctor"]) != current_doctors or list(st.session_state[abs_grid_key].columns)[1:] != day_cols:
         new_df = pd.DataFrame({"Doctor": current_doctors})
         for c in day_cols: new_df[c] = ""
         
@@ -965,7 +1041,12 @@ with tab2:
     for w_idx, week_start_idx in enumerate(range(0, len(ui_roster_dates), 7)):
         st.markdown(f"#### Forced Week {w_idx + 1}")
         week_dates = ui_roster_dates[week_start_idx : week_start_idx + 7]
-        col_names = [d.strftime("%Y-%m-%d") for d in week_dates]
+        col_names = []
+        for d in week_dates:
+            day_str = f"{d.strftime('%b %d')}"
+            if d.weekday() == 5: day_str += " Sa"
+            elif d.weekday() == 6: day_str += " Su"
+            col_names.append(day_str)
         
         base_key = f"manual_grid_base_{month_key}_{w_idx}"
         last_edited_key = f"last_edited_manual_grid_{w_idx}"
@@ -977,7 +1058,7 @@ with tab2:
             
         current_grid_state = st.session_state.get(last_edited_key, st.session_state[base_key])
         
-        if list(current_grid_state["Shift"]) != dynamic_shift_options:
+        if list(current_grid_state["Shift"]) != dynamic_shift_options or list(current_grid_state.columns)[1:] != col_names:
             init_dict = {"Shift": dynamic_shift_options}
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
             new_df = pd.DataFrame(init_dict)
@@ -990,10 +1071,10 @@ with tab2:
             st.session_state[base_key] = new_df
 
         col_config_manual = {"Shift": st.column_config.TextColumn("Shift", disabled=True, pinned=True)}
-        for d in week_dates:
+        for i, d in enumerate(week_dates):
             d_str = d.strftime("%Y-%m-%d")
-            display_name = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
-            col_config_manual[d_str] = st.column_config.SelectboxColumn(display_name, options=["", "YES"] + current_doctors)
+            display_name = col_names[i]
+            col_config_manual[display_name] = st.column_config.SelectboxColumn(display_name, options=["", "YES"] + current_doctors)
             
         edited_grid = st.data_editor(
             st.session_state[base_key], 
@@ -1063,14 +1144,15 @@ with tab3:
             valid_dates = calculate_recurring_days(selected_year, selected_month, rules.get("weekdays", []), rules.get("weeks", ["All"]))
             for vd in valid_dates:
                 d_obj = datetime.datetime.strptime(vd, "%Y-%m-%d")
-                col_idx = d_obj.day - 1
-                col_name = day_cols[col_idx]
-                init_df.loc[init_df["Activity"] == act, col_name] = True
+                if d_obj in ui_roster_dates:
+                    col_idx = ui_roster_dates.index(d_obj)
+                    col_name = day_cols[col_idx]
+                    init_df.loc[init_df["Activity"] == act, col_name] = True
                 
         st.session_state[act_grid_key] = init_df
         
     curr_act_grid = st.session_state[act_grid_key]
-    if list(curr_act_grid["Activity"]) != activities:
+    if list(curr_act_grid["Activity"]) != activities or list(curr_act_grid.columns)[1:] != day_cols:
         new_df = pd.DataFrame({"Activity": activities})
         for c in day_cols: new_df[c] = False
         for act in activities:
@@ -1083,8 +1165,9 @@ with tab3:
                 valid_dates = calculate_recurring_days(selected_year, selected_month, rules.get("weekdays", []), rules.get("weeks", ["All"]))
                 for vd in valid_dates:
                     d_obj = datetime.datetime.strptime(vd, "%Y-%m-%d")
-                    col_idx = d_obj.day - 1
-                    new_df.loc[new_df["Activity"] == act, day_cols[col_idx]] = True
+                    if d_obj in ui_roster_dates:
+                        col_idx = ui_roster_dates.index(d_obj)
+                        new_df.loc[new_df["Activity"] == act, day_cols[col_idx]] = True
                     
         st.session_state[act_grid_key] = new_df
         
@@ -1101,7 +1184,7 @@ with tab3:
     
     for idx, row in edited_act_df.iterrows():
         act = row["Activity"]
-        for i, d in enumerate(month_dates):
+        for i, d in enumerate(ui_roster_dates):
             d_str = d.strftime("%Y-%m-%d")
             col_name = day_cols[i]
             if row[col_name]:
@@ -1116,10 +1199,19 @@ with tab4:
     st.subheader("⚙️ Generate Draft Schedule")
     st.markdown("The algorithm will mathematically balance hours, nights, and holidays, outputting an editable draft in **Tab 5**.")
     
+    if "generation_error" in st.session_state:
+        st.error(st.session_state.generation_error)
+        with st.expander("🛠️ Resolution Center (Lesser Evils)", expanded=True):
+            st.markdown("The department is mathematically understaffed based on your current settings. Select an override to continue:")
+            allow_understaffing = st.checkbox("☑️ Allow Shift Understaffing (Leave some non-critical Clinic/Ward PM shifts empty)")
+            ignore_34h = st.checkbox("☑️ Ignore 34h Legal Minimum (Allow some doctors to run an hour deficit)")
+            st.session_state.resolution_toggles = {"allow_understaffing": allow_understaffing, "ignore_34h": ignore_34h}
+    
     if st.button("🛠️ GENERATE DRAFT", use_container_width=True):
         if len(current_doctors) == 0:
             st.error("❌ Please add at least one doctor to the Persistent Settings.")
         else:
+            if "resolution_toggles" not in st.session_state: st.session_state.resolution_toggles = {}
             with st.spinner("Calculating constraints (this may cascade through multiple fallback levels and take up to 60 seconds)..."):
                 pp_dict = {}
                 doc_capabilities_dict = {}
@@ -1134,7 +1226,7 @@ with tab4:
                 daily_absences = {}
                 for idx, row in edited_absences_df.iterrows():
                     doc = row["Doctor"]
-                    for i, d in enumerate(month_dates):
+                    for i, d in enumerate(ui_roster_dates):
                         d_str = d.strftime("%Y-%m-%d")
                         col_name = day_cols[i]
                         val = row.get(col_name, "")
@@ -1146,47 +1238,58 @@ with tab4:
                 for w_idx, df_w in edited_manual_grids.items():
                     for idx, row in df_w.iterrows():
                         shift_val = str(row["Shift"]).strip().upper()
-                        for d in ui_roster_dates[w_idx*7 : (w_idx*7)+7]:
+                        week_dates = ui_roster_dates[w_idx*7 : (w_idx*7)+7]
+                        for i, d in enumerate(week_dates):
                             d_str = d.strftime("%Y-%m-%d")
-                            val = str(row.get(d_str, "")).strip().upper()
-                            if shift_val == '🌟 SUPER HOLIDAY':
-                                if val == 'YES': manual_super_holidays.append(d_str)
-                            elif val and val in current_doctors:
-                                manual_shifts.append((val, d_str, shift_val))
+                            display_name = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
+                            if display_name in row:
+                                val = str(row.get(display_name, "")).strip().upper()
+                                if shift_val == '🌟 SUPER HOLIDAY':
+                                    if val == 'YES': manual_super_holidays.append(d_str)
+                                elif val and val in current_doctors:
+                                    manual_shifts.append((val, d_str, shift_val))
 
                 success, draft_grids, warning = generate_draft_schedule(
                     year=selected_year, month=selected_month, conditional_or_days=or_days_formatted, 
                     manual_festivities=[], manual_super_holidays=manual_super_holidays, manual_assignments=manual_shifts,
                     doctor_capabilities=doc_capabilities_dict, outpatient_configs=outpatient_setup, 
-                    daily_absences=daily_absences, private_practice_afternoons=pp_dict, doctors_list=current_doctors, debug_mode=debug_toggle
+                    daily_absences=daily_absences, private_practice_afternoons=pp_dict, doctors_list=current_doctors, 
+                    debug_mode=debug_toggle, resolution_toggles=st.session_state.get("resolution_toggles", {})
                 )
                 
                 if success:
                     st.success("✅ Draft generated successfully! Go to **Tab 5 (🚀 Edit & Publish)** to review, modify, and publish the final Excel.")
                     if warning: st.warning(warning)
                     st.session_state.generated_draft_grids = draft_grids
+                    st.session_state.draft_month_key = month_key
+                    if "generation_error" in st.session_state: del st.session_state["generation_error"]
                     for k in list(st.session_state.keys()):
                         if k.startswith("draft_editor_"): del st.session_state[k]
                 else:
-                    st.error(f"❌ {warning}")
+                    st.session_state.generation_error = warning
+                    st.rerun()
 
 with tab5:
     st.subheader("🚀 Review, Edit & Publish")
     
     if "generated_draft_grids" not in st.session_state:
         st.info("No draft generated yet. Go to **Tab 4** to generate the base schedule first.")
+    elif st.session_state.get("draft_month_key") != month_key:
+        st.warning(f"⚠️ You are currently viewing a different month, but the saved draft is for an old layout. Please go to **Tab 4** and click 'GENERATE DRAFT' again.")
     else:
         st.markdown("Make any last-minute human adjustments here. The Live Fairness Dashboard below will update instantly as you edit.")
         
         edited_final_drafts = {}
         for w_idx in range(0, len(ui_roster_dates) // 7):
+            if w_idx not in st.session_state.generated_draft_grids: continue
+                
             st.markdown(f"#### Draft Week {w_idx + 1}")
             week_dates = ui_roster_dates[w_idx*7 : (w_idx*7)+7]
             col_config = {"Shift": st.column_config.TextColumn("Shift", disabled=True)}
-            for d in week_dates:
+            for i, d in enumerate(week_dates):
                 d_str = d.strftime("%Y-%m-%d")
                 display_name = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
-                col_config[d_str] = st.column_config.SelectboxColumn(display_name, options=[""] + current_doctors)
+                col_config[d_str] = st.column_config.SelectboxColumn(display_name, options=["", "[UNCOVERED]"] + current_doctors)
                 
             edited_final_drafts[w_idx] = st.data_editor(
                 st.session_state.generated_draft_grids[w_idx], 
@@ -1207,16 +1310,19 @@ with tab5:
         for w_idx, df_w in edited_manual_grids.items():
             for idx, row in df_w.iterrows():
                 shift_val = str(row["Shift"]).strip().upper()
-                for d in ui_roster_dates[w_idx*7 : (w_idx*7)+7]:
+                week_dates = ui_roster_dates[w_idx*7 : (w_idx*7)+7]
+                for i, d in enumerate(week_dates):
                     d_str = d.strftime("%Y-%m-%d")
-                    val = str(row.get(d_str, "")).strip().upper()
-                    if shift_val == '🌟 SUPER HOLIDAY' and val == 'YES':
-                        manual_super_holidays.append(d_str)
+                    display_name = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
+                    if display_name in row:
+                        val = str(row.get(display_name, "")).strip().upper()
+                        if shift_val == '🌟 SUPER HOLIDAY' and val == 'YES':
+                            manual_super_holidays.append(d_str)
 
         daily_absences = {}
         for idx, row in edited_absences_df.iterrows():
             doc = row["Doctor"]
-            for i, d in enumerate(month_dates):
+            for i, d in enumerate(ui_roster_dates):
                 d_str = d.strftime("%Y-%m-%d")
                 col_name = day_cols[i]
                 val = row.get(col_name, "")
