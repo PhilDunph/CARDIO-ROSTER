@@ -15,15 +15,12 @@ from github import Github
 # 0. GITHUB CLOUD SYNC ENGINE
 # ==========================================
 def push_to_github(file_path, commit_message):
-    """Silently pushes local json updates to GitHub if running on Streamlit Cloud."""
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
         try:
             g = Github(st.secrets["GITHUB_TOKEN"])
             repo = g.get_repo(st.secrets["GITHUB_REPO"])
-            
             with open(file_path, 'r') as file:
                 content = file.read()
-                
             try:
                 contents = repo.get_contents(file_path)
                 repo.update_file(contents.path, commit_message, content, contents.sha)
@@ -124,16 +121,6 @@ def get_roster_dates(year, month):
         curr += datetime.timedelta(days=1)
     return roster_dates
 
-def get_dates_for_weekdays(year, month, weekdays):
-    day_map = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 'Friday': 4, 'Saturday': 5, 'Sunday': 6}
-    target_days = [day_map[w] for w in weekdays]
-    num_days = calendar.monthrange(year, month)[1]
-    dates = []
-    for d in range(1, num_days + 1):
-        dt = datetime.date(year, month, d)
-        if dt.weekday() in target_days: dates.append(dt)
-    return dates
-
 def get_master_name(s):
     master_display = {'WARD_AM': 'REPARTO', 'URG_AM': 'URGENZE', 'OR_AM': 'SALA', 'WARD_PM': 'REPARTO', 'URG_PM': 'URGENZE', 'NIGHT': 'NOTTE', 'REP_NIGHT': 'REPERIBILE NOTTE', 'REP_DAY': 'REPERIBILE GIORNO MATTINA E POMERIGGIO'}
     if s in master_display: return master_display[s]
@@ -201,8 +188,7 @@ def compute_monthly_stats(doc_schedule, num_days, roster_dates, day_active, it_h
 # 3. DRAFT GENERATOR (Math Engine Only)
 # ==========================================
 def generate_draft_schedule(year, month, conditional_or_days, manual_festivities, manual_super_holidays, manual_assignments,
-                            doctor_capabilities, outpatient_configs, ferie, leave_weeks, desiderate, 
-                            private_practice_afternoons, doctors_list, debug_mode=False):
+                            doctor_capabilities, outpatient_configs, daily_absences, private_practice_afternoons, doctors_list, debug_mode=False):
     
     if manual_super_holidays is None: manual_super_holidays = []
     
@@ -225,41 +211,24 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
     for (d, date_str, s) in manual_assignments:
         if date_str in date_to_idx and d in doctors: manual_keys.add((d, date_to_idx[date_str], s))
 
-    all_leave_dates = []
-    for d, dates in ferie.items(): all_leave_dates.extend([(d, date_str) for date_str in dates])
-    for d, dates in desiderate.items(): all_leave_dates.extend([(d, date_str) for date_str in dates])
-    for d, start_mon_str in leave_weeks:
-        if start_mon_str in date_to_idx:
-            start_idx = date_to_idx[start_mon_str]
-            for i in range(7):
-                if start_idx + i < num_days:
-                    all_leave_dates.extend([(d, roster_dates[start_idx + i].strftime("%Y-%m-%d"))])
+    # OVERLAP WARNING SCANNER (Ferie & Full Leave)
+    fully_off_dates = []
+    for (d, date_str), val in daily_absences.items():
+        if val in ['F', 'X']:
+            fully_off_dates.append(date_str)
                     
-    day_counts = Counter([date for doc, date in all_leave_dates])
+    day_counts = Counter(fully_off_dates)
     overlaps = [date for date, count in day_counts.items() if count > 1]
-    overlap_warning = f"⚠️ Notice: Multiple doctors are off on: {', '.join(overlaps)}" if overlaps else ""
+    overlap_warning = f"⚠️ Notice: Multiple doctors requested completely off (F/X) on: {', '.join(overlaps)}" if overlaps else ""
 
     doc_unavailable_set = {d: set() for d in doctors}
     doc_contract_off_set = {d: set() for d in doctors}
 
-    for d in doctors:
-        if d in ferie:
-            for date_str in ferie[d]:
-                if date_str in date_to_idx: 
-                    doc_unavailable_set[d].add(date_str)
-                    doc_contract_off_set[d].add(date_str)
-        if d in desiderate:
-            for date_str in desiderate[d]:
-                if date_str in date_to_idx: doc_unavailable_set[d].add(date_str)
-        for doc_l, start_mon in leave_weeks:
-            if doc_l == d:
-                start_idx_l = date_to_idx.get(start_mon, -1)
-                if start_idx_l != -1:
-                    for i in range(7):
-                        if start_idx_l + i < num_days: 
-                            d_str = roster_dates[start_idx_l + i].strftime("%Y-%m-%d")
-                            doc_unavailable_set[d].add(d_str)
-                            doc_contract_off_set[d].add(d_str)
+    for (d, date_str), val in daily_absences.items():
+        if val in ['F', 'X']:
+            doc_unavailable_set[d].add(date_str)
+        if val == 'F':
+            doc_contract_off_set[d].add(date_str)
                             
     doc_active_days = {d: max(1, num_days - len(doc_unavailable_set[d])) for d in doctors}
     doc_contract_days = {d: max(1, num_days - len(doc_contract_off_set[d])) for d in doctors}
@@ -294,7 +263,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
         if any((d == 'GAUDENZI' and day == day_idx) for (d, day, s) in manual_keys): available_bodies += 1
             
         if available_bodies < min_bodies_needed:
-            return False, None, f"🛑 CRITICAL STAFFING SHORTAGE ON {current_date_str}: Only {available_bodies} doctors available. Need at least {min_bodies_needed}."
+            return False, None, f"🛑 CRITICAL STAFFING SHORTAGE ON {current_date_str}: Only {available_bodies} doctors fully available. Need at least {min_bodies_needed}."
 
     shifts = ['WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT']
     for out_type in outpatient_configs.keys(): shifts.append(f'OUT_{out_type}_AM')
@@ -303,7 +272,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
     surplus_hours = max(0, total_available_hours - sum(int((doc_contract_days[d] / 7.0) * 34) for d in doctors if d != 'GAUDENZI'))
     base_max_flex = int(surplus_hours / len([d for d in doctors if d != 'GAUDENZI'])) + 18 
 
-    # 🟢 CASCADING FALLBACK ENGINE
     pass_levels = [4] if debug_mode else [0, 1, 2, 3]
     
     for pass_level in pass_levels:
@@ -327,17 +295,18 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
 
         for d in doctors:
             if d == 'GAUDENZI': continue
-            for date_str in doc_unavailable_set[d]:
-                if date_str in date_to_idx:
-                    for s in shifts: model.Add(work[(d, date_to_idx[date_str], s)] == 0)
-
-        for d, start_monday_str in leave_weeks:
-            if d in doctors and d != 'GAUDENZI' and start_monday_str in date_to_idx:
-                start_idx = date_to_idx[start_monday_str]
-                if 0 <= start_idx - 1 < num_days:
-                    for s in shifts: model.Add(work[(d, start_idx - 1, s)] == 0)
-                if 0 <= start_idx - 4 < num_days:
-                    objective_terms.append(50 * work[(d, start_idx - 4, 'NIGHT')])
+            for day_idx in range(num_days):
+                date_str = roster_dates[day_idx].strftime("%Y-%m-%d")
+                val = daily_absences.get((d, date_str), "")
+                
+                if val in ['F', 'X']:
+                    for s in shifts: model.Add(work[(d, day_idx, s)] == 0)
+                elif val == 'P':
+                    for s in ['WARD_PM', 'URG_PM', 'NIGHT', 'REP_NIGHT', 'REP_DAY']:
+                        if s in shifts: model.Add(work[(d, day_idx, s)] == 0)
+                elif val == 'N':
+                    for s in ['NIGHT', 'REP_NIGHT']:
+                        if s in shifts: model.Add(work[(d, day_idx, s)] == 0)
                     
         for day_idx in range(num_days):
             current_date_str = roster_dates[day_idx].strftime("%Y-%m-%d")
@@ -455,7 +424,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
             
             if pass_level < 4:
                 model.Add(active_expr >= tgt_hours)
-                model.Add(diff_m <= 12) # Hard constraint max deficit
+                model.Add(diff_m <= 12)
                 
             if pass_level == 0:
                 model.Add(diff_p <= base_max_flex)
@@ -533,7 +502,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 model.AddBoolAnd([work[(d, day_idx, 'URG_AM')], work[(d, day_idx, 'URG_PM')]]).OnlyEnforceIf(urg_double)
                 objective_terms.append(10 * urg_double) 
 
-        # 🟢 LIFETIME EQUITY PENALTIES (Applied in all passes)
         for d in doctors:
             if d == 'GAUDENZI': continue
             n_pts = int(lifetime[d]['nights'] * 10)
@@ -545,7 +513,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
             for day_idx in range(num_days):
                 curr_date = roster_dates[day_idx]
                 
-                # Penalize giving nights to docs who already did a lot in their lifetime
                 objective_terms.append(-1 * n_pts * work[(d, day_idx, 'NIGHT')])
                 objective_terms.append(-1 * int(r_pts/2) * work[(d, day_idx, 'REP_NIGHT')])
                 if day_idx in sunday_equivalent_days:
@@ -617,12 +584,11 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
 
     return False, None, "🛑 Constraints are too tight. Even after relaxing all soft rules, the algorithm cannot find a legally compliant schedule. Modify leaves, add Outpatient Clinics, or use Emergency Debug Mode."
 
-
 # ==========================================
 # 4. EXPORT ENGINE (Reads Edited UI Draft)
 # ==========================================
 def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or_days, manual_festivities, manual_super_holidays,
-                                outpatient_configs, ferie, leave_weeks, desiderate, doctor_colors, doctors_list):
+                                outpatient_configs, daily_absences, doctor_colors, doctors_list):
     
     if manual_super_holidays is None: manual_super_holidays = []
     
@@ -642,16 +608,9 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
         if is_sunday or is_holiday: sunday_equivalent_days.append(day_idx)
             
     doc_contract_off_set = {d: set() for d in doctors}
-    for d in doctors:
-        if d in ferie:
-            for date_str in ferie[d]:
-                if date_str in date_to_idx: doc_contract_off_set[d].add(date_str)
-        for doc_l, start_mon in leave_weeks:
-            if doc_l == d:
-                start_idx_l = date_to_idx.get(start_mon, -1)
-                if start_idx_l != -1:
-                    for i in range(7):
-                        if start_idx_l + i < num_days: doc_contract_off_set[d].add(roster_dates[start_idx_l + i].strftime("%Y-%m-%d"))
+    for (d, date_str), val in daily_absences.items():
+        if val == 'F' and date_str in date_to_idx: 
+            doc_contract_off_set[d].add(date_str)
                         
     doc_contract_days = {d: max(1, num_days - len(doc_contract_off_set[d])) for d in doctors}
 
@@ -870,13 +829,12 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
 # ==========================================
 st.set_page_config(page_title="Cardiology Scheduler", page_icon="🩺", layout="wide")
 
-if "app_initialized_v3" not in st.session_state:
+if "app_initialized_v4" not in st.session_state:
     settings = load_persistent_settings()
     st.session_state.clinics_base_df = pd.DataFrame({"Clinic Name": settings["clinics"]})
     st.session_state.docs_base_df = pd.DataFrame(settings["docs_base"]) 
     st.session_state.cap_base_df = pd.DataFrame(settings["capabilities"]) 
-    st.session_state.absences_base_df = pd.DataFrame(columns=["Doctor", "Ferie (YYYY-MM-DD)", "Desiderate (YYYY-MM-DD)", "Leave Weeks (Type the Monday)"])
-    st.session_state.app_initialized_v3 = True
+    st.session_state.app_initialized_v4 = True
 
 current_clinics = [str(c).strip().upper().replace(" ", "_") for c in st.session_state.clinics_base_df["Clinic Name"].dropna().unique() if str(c).strip()]
 
@@ -936,33 +894,54 @@ with st.sidebar:
 
 ui_roster_dates = get_roster_dates(selected_year, selected_month)
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Absences (Ferie/Leave)", "🔒 Forced Shifts", "🏥 OR & Outpatient Clinics", "⚙️ Generate Draft", "🚀 Edit & Publish"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Absences & Desiderate", "🔒 Forced Shifts", "🏥 OR & Clinics", "⚙️ Generate Draft", "🚀 Edit & Publish"])
 
 with tab1:
-    st.subheader("Monthly Absences (Ferie, Desiderate, Leave Weeks)")
-    st.markdown("Type the dates. Multiple dates must be separated by commas (e.g. `2026-07-04, 2026-07-05`).")
+    st.subheader("Daily Absences & Desiderate")
+    st.markdown("""
+    Select specific flags for each doctor per day:
+    - **F**: Ferie (Full day off, reduces monthly 34h target)
+    - **X**: Desiderata Off (Full day off, does *not* reduce target)
+    - **P**: Desiderata Mattina (No afternoon/night shifts)
+    - **N**: No Notti (No night shifts)
+    """)
     
-    current_abs_state = st.session_state.get('last_edited_absences', st.session_state.absences_base_df)
+    month_key = f"{selected_year}-{selected_month:02d}"
+    abs_grid_key = f"absences_grid_{month_key}"
     
-    if list(current_abs_state["Doctor"]) != current_doctors:
+    num_days_in_month = calendar.monthrange(selected_year, selected_month)[1]
+    month_dates = [datetime.date(selected_year, selected_month, d) for d in range(1, num_days_in_month + 1)]
+    
+    day_cols = []
+    col_config = {"Doctor": st.column_config.TextColumn("Doctor Name", disabled=True, pinned=True)}
+    for d in month_dates:
+        day_str = str(d.day)
+        if d.weekday() == 5: day_str += " Sa"
+        elif d.weekday() == 6: day_str += " Su"
+        day_cols.append(day_str)
+        col_config[day_str] = st.column_config.SelectboxColumn(day_str, options=["", "F", "X", "P", "N"], width="small")
+        
+    if abs_grid_key not in st.session_state:
+        init_df = pd.DataFrame({"Doctor": current_doctors})
+        for c in day_cols: init_df[c] = ""
+        st.session_state[abs_grid_key] = init_df
+        
+    curr_grid = st.session_state[abs_grid_key]
+    if list(curr_grid["Doctor"]) != current_doctors:
         new_df = pd.DataFrame({"Doctor": current_doctors})
-        new_df["Ferie (YYYY-MM-DD)"] = ""
-        new_df["Desiderate (YYYY-MM-DD)"] = ""
-        new_df["Leave Weeks (Type the Monday)"] = ""
-        for idx, row in current_abs_state.iterrows():
-            d = row["Doctor"]
-            if d in current_doctors:
-                new_df.loc[new_df["Doctor"] == d, "Ferie (YYYY-MM-DD)"] = row["Ferie (YYYY-MM-DD)"]
-                new_df.loc[new_df["Doctor"] == d, "Desiderate (YYYY-MM-DD)"] = row["Desiderate (YYYY-MM-DD)"]
-                new_df.loc[new_df["Doctor"] == d, "Leave Weeks (Type the Monday)"] = row["Leave Weeks (Type the Monday)"]
-        st.session_state.absences_base_df = new_df
+        for c in day_cols: new_df[c] = ""
+        for idx, row in curr_grid.iterrows():
+            if row["Doctor"] in current_doctors:
+                for c in day_cols:
+                    if c in curr_grid.columns: new_df.loc[new_df["Doctor"] == row["Doctor"], c] = row[c]
+        st.session_state[abs_grid_key] = new_df
         
     edited_absences_df = st.data_editor(
-        st.session_state.absences_base_df,
-        column_config={"Doctor": st.column_config.TextColumn("Doctor Name", disabled=True)},
+        st.session_state[abs_grid_key],
+        column_config=col_config,
         hide_index=True, use_container_width=True
     )
-    st.session_state.last_edited_absences = edited_absences_df
+    st.session_state[abs_grid_key] = edited_absences_df
 
 with tab2:
     st.subheader("Visual Override Grid")
@@ -1004,15 +983,15 @@ with tab2:
                             new_df.loc[new_df["Shift"] == s, c] = row[c]
             st.session_state[base_key] = new_df
 
-        col_config = {"Shift": st.column_config.TextColumn("Shift", disabled=True)}
+        col_config_manual = {"Shift": st.column_config.TextColumn("Shift", disabled=True, pinned=True)}
         for d in week_dates:
             d_str = d.strftime("%Y-%m-%d")
             display_name = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
-            col_config[d_str] = st.column_config.SelectboxColumn(display_name, options=["", "YES"] + current_doctors)
+            col_config_manual[d_str] = st.column_config.SelectboxColumn(display_name, options=["", "YES"] + current_doctors)
             
         edited_grid = st.data_editor(
             st.session_state[base_key], 
-            column_config=col_config, 
+            column_config=col_config_manual, 
             hide_index=True, 
             use_container_width=True,
             key=f"editor_manual_grid_week_{w_idx}"
@@ -1022,55 +1001,74 @@ with tab2:
         st.markdown("---")
 
 with tab3:
-    all_dates_in_month = [datetime.date(selected_year, selected_month, d) for d in range(1, calendar.monthrange(selected_year, selected_month)[1] + 1)]
+    st.subheader("🏥 Operating Room & Outpatient Clinics Setup")
     
-    st.subheader("🏥 Operating Room (OR)")
-    or_weekdays = st.multiselect("Standard OR Weekdays", 
-                                 ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], 
-                                 default=["Monday", "Friday"])
-    
-    auto_or_dates = get_dates_for_weekdays(selected_year, selected_month, or_weekdays)
-    or_days_input = st.multiselect("Final OR Dates (Add/Remove specific days)", 
-                                   all_dates_in_month, 
-                                   default=auto_or_dates,
-                                   key=f"or_dates_{selected_year}_{selected_month}")
-    or_days_formatted = [d.strftime("%Y-%m-%d") for d in or_days_input]
-    
-    or_docs = edited_cap_df[edited_cap_df["OR Capable"] == True]["Doctor"].dropna().tolist() if "OR Capable" in edited_cap_df.columns else []
-    st.caption(f"**OR Capable Doctors (from Sidebar):** {', '.join(or_docs) if or_docs else 'None'}")
-
-    st.markdown("---")
-    st.subheader("Manage Outpatient Clinics")
+    act_grid_key = f"activities_grid_{month_key}"
     
     edited_clinics_df = st.data_editor(
         st.session_state.clinics_base_df, 
         num_rows="dynamic",
-        column_config={"Clinic Name": st.column_config.TextColumn("Clinic Name", required=True)},
+        column_config={"Clinic Name": st.column_config.TextColumn("Define New Clinics Here", required=True)},
         use_container_width=True,
         hide_index=True
     )
     st.session_state.clinics_base_df = edited_clinics_df
     current_clinics = [str(c).strip().upper().replace(" ", "_") for c in edited_clinics_df["Clinic Name"].dropna().unique() if str(c).strip()]
     
-    outpatient_setup = {}
-    if current_clinics:
-        for clinic in current_clinics:
-            with st.expander(f"🩺 {clinic.replace('_', ' ')} Schedule", expanded=True):
-                if clinic in edited_cap_df.columns:
-                    capable = edited_cap_df[edited_cap_df[clinic] == True]["Doctor"].dropna().tolist()
-                else:
-                    capable = []
+    st.markdown("#### Schedule Activities")
+    st.markdown("Tick the days where an OR or Clinic session is active.")
+    
+    activities = ["OR"] + current_clinics
+    act_col_config = {"Activity": st.column_config.TextColumn("Activity", disabled=True, pinned=True)}
+    for d_str in day_cols:
+        act_col_config[d_str] = st.column_config.CheckboxColumn(d_str, default=False, width="small")
+        
+    if act_grid_key not in st.session_state:
+        init_df = pd.DataFrame({"Activity": activities})
+        for c in day_cols: init_df[c] = False
+        st.session_state[act_grid_key] = init_df
+        
+    curr_act_grid = st.session_state[act_grid_key]
+    if list(curr_act_grid["Activity"]) != activities:
+        new_df = pd.DataFrame({"Activity": activities})
+        for c in day_cols: new_df[c] = False
+        for idx, row in curr_act_grid.iterrows():
+            if row["Activity"] in activities:
+                for c in day_cols:
+                    if c in curr_act_grid.columns: new_df.loc[new_df["Activity"] == row["Activity"], c] = row[c]
+        st.session_state[act_grid_key] = new_df
+        
+    edited_act_df = st.data_editor(
+        st.session_state[act_grid_key],
+        column_config=act_col_config,
+        hide_index=True, use_container_width=True
+    )
+    st.session_state[act_grid_key] = edited_act_df
+    
+    or_days_formatted = []
+    outpatient_setup = {c: {'days': [], 'capable': []} for c in current_clinics}
+    
+    for idx, row in edited_act_df.iterrows():
+        act = row["Activity"]
+        for i, d in enumerate(month_dates):
+            d_str = d.strftime("%Y-%m-%d")
+            col_name = day_cols[i]
+            if row[col_name]:
+                if act == "OR": or_days_formatted.append(d_str)
+                else: outpatient_setup[act]['days'].append(d_str)
                     
-                st.caption(f"**Assigned Doctors (from Sidebar):** {', '.join(capable) if capable else 'None'}")
-                
-                clinic_weekdays = st.multiselect("Standard Weekly Days", ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], key=f"wd_{clinic}")
-                auto_clinic_dates = get_dates_for_weekdays(selected_year, selected_month, clinic_weekdays)
-                final_clinic_dates = st.multiselect("Final Specific Dates", all_dates_in_month, default=auto_clinic_dates, key=f"dates_{clinic}_{selected_year}_{selected_month}")
-                
-                outpatient_setup[clinic] = {
-                    'days': [d.strftime("%Y-%m-%d") for d in final_clinic_dates],
-                    'capable': capable
-                }
+    for c in current_clinics:
+        if c in edited_cap_df.columns:
+            outpatient_setup[c]['capable'] = edited_cap_df[edited_cap_df[c] == True]["Doctor"].dropna().tolist()
+
+    st.markdown("---")
+    st.markdown("##### Activity Roster Summary (Read-Only)")
+    with st.expander("View Selected Days"):
+        st.markdown("**Operating Room (OR):**")
+        st.write(", ".join(or_days_formatted) if or_days_formatted else "None")
+        for c in current_clinics:
+            st.markdown(f"**{c.replace('_', ' ')}:**")
+            st.write(", ".join(outpatient_setup[c]['days']) if outpatient_setup[c]['days'] else "None")
 
 with tab4:
     st.subheader("⚙️ Generate Draft Schedule")
@@ -1091,17 +1089,15 @@ with tab4:
                     doc = row["Doctor"]
                     doc_capabilities_dict[doc] = {col: bool(row[col]) for col in cap_cols if col != "Doctor"}
 
-                ferie_dict, desiderate_dict, leave_list = {}, {}, []
+                daily_absences = {}
                 for idx, row in edited_absences_df.iterrows():
-                    doc = str(row["Doctor"]).strip().upper()
-                    if not doc: continue
-                    ferie = row.get("Ferie (YYYY-MM-DD)", "")
-                    if pd.notna(ferie) and ferie: ferie_dict[doc] = [d.strip() for d in str(ferie).split(",") if d.strip()]
-                    des = row.get("Desiderate (YYYY-MM-DD)", "")
-                    if pd.notna(des) and des: desiderate_dict[doc] = [d.strip() for d in str(des).split(",") if d.strip()]
-                    l_w = row.get("Leave Weeks (Type the Monday)", "")
-                    if pd.notna(l_w) and l_w: 
-                        for d_str in [d.strip() for d in str(l_w).split(",") if d.strip()]: leave_list.append((doc, d_str))
+                    doc = row["Doctor"]
+                    for i, d in enumerate(month_dates):
+                        d_str = d.strftime("%Y-%m-%d")
+                        col_name = day_cols[i]
+                        val = row.get(col_name, "")
+                        if val in ["F", "X", "P", "N"]:
+                            daily_absences[(doc, d_str)] = val
 
                 manual_shifts = []
                 manual_super_holidays = []
@@ -1120,8 +1116,7 @@ with tab4:
                     year=selected_year, month=selected_month, conditional_or_days=or_days_formatted, 
                     manual_festivities=[], manual_super_holidays=manual_super_holidays, manual_assignments=manual_shifts,
                     doctor_capabilities=doc_capabilities_dict, outpatient_configs=outpatient_setup, 
-                    ferie=ferie_dict, leave_weeks=leave_list, desiderate=desiderate_dict,
-                    private_practice_afternoons=pp_dict, doctors_list=current_doctors, debug_mode=debug_toggle
+                    daily_absences=daily_absences, private_practice_afternoons=pp_dict, doctors_list=current_doctors, debug_mode=debug_toggle
                 )
                 
                 if success:
@@ -1176,27 +1171,21 @@ with tab5:
                     if shift_val == '🌟 SUPER HOLIDAY' and val == 'YES':
                         manual_super_holidays.append(d_str)
 
-        ferie_dict, leave_list = {}, []
+        daily_absences = {}
         for idx, row in edited_absences_df.iterrows():
-            doc = str(row["Doctor"]).strip().upper()
-            if not doc: continue
-            ferie = row.get("Ferie (YYYY-MM-DD)", "")
-            if pd.notna(ferie) and ferie: ferie_dict[doc] = [d.strip() for d in str(ferie).split(",") if d.strip()]
-            l_w = row.get("Leave Weeks (Type the Monday)", "")
-            if pd.notna(l_w) and l_w: 
-                for d_str in [d.strip() for d in str(l_w).split(",") if d.strip()]: leave_list.append((doc, d_str))
+            doc = row["Doctor"]
+            for i, d in enumerate(month_dates):
+                d_str = d.strftime("%Y-%m-%d")
+                col_name = day_cols[i]
+                val = row.get(col_name, "")
+                if val in ["F", "X", "P", "N"]:
+                    daily_absences[(doc, d_str)] = val
 
         doc_contract_off_set = {d: set() for d in current_doctors}
-        for d in current_doctors:
-            if d in ferie_dict:
-                for date_str in ferie_dict[d]:
-                    if date_str in date_to_idx: doc_contract_off_set[d].add(date_str)
-            for doc_l, start_mon in leave_list:
-                if doc_l == d:
-                    start_idx_l = date_to_idx.get(start_mon, -1)
-                    if start_idx_l != -1:
-                        for i in range(7):
-                            if start_idx_l + i < num_days: doc_contract_off_set[d].add(ui_roster_dates[start_idx_l + i].strftime("%Y-%m-%d"))
+        for (d, date_str), val in daily_absences.items():
+            if val == 'F' and date_str in date_to_idx:
+                doc_contract_off_set[d].add(date_str)
+                
         doc_contract_days = {d: max(1, num_days - len(doc_contract_off_set[d])) for d in current_doctors}
 
         doc_schedule = {doc: {day_idx: [] for day_idx in range(num_days)} for doc in current_doctors}
@@ -1257,7 +1246,7 @@ with tab5:
                 excel_data = process_and_export_schedule(
                     edited_weekly_grids=edited_final_drafts, year=selected_year, month=selected_month, 
                     conditional_or_days=or_days_formatted, manual_festivities=[], manual_super_holidays=manual_super_holidays,
-                    outpatient_configs=outpatient_setup, ferie=ferie_dict, leave_weeks=leave_list, desiderate=desiderate_dict, 
+                    outpatient_configs=outpatient_setup, daily_absences=daily_absences,
                     doctor_colors=doc_colors_ui, doctors_list=current_doctors
                 )
                 
