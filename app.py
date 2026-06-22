@@ -102,10 +102,12 @@ def get_lifetime_stats(ledger, doc):
 # 2. CALENDAR & UTILS
 # ==========================================
 def get_roster_dates(year, month):
+    """Generates contiguous 7-day weeks. A week belongs ONLY to the month of its Monday."""
     cal = calendar.Calendar(firstweekday=0) 
     mondays = []
     for week in cal.monthdatescalendar(year, month):
-        if any(d.month == month for d in week):
+        # STRICT RULE: The week is owned by whichever month contains the Monday
+        if week[0].month == month:
             if week[0] not in mondays: mondays.append(week[0])
     
     if not mondays: return []
@@ -231,6 +233,14 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
     for (d, date_str, s) in manual_assignments:
         if date_str in date_to_idx and d in doctors: manual_keys.add((d, date_to_idx[date_str], s))
 
+    fully_off_dates = []
+    for (d, date_str), val in daily_absences.items():
+        if val in ['F', 'X']: fully_off_dates.append(date_str)
+                    
+    day_counts = Counter(fully_off_dates)
+    overlaps = [date for date, count in day_counts.items() if count > 1]
+    overlap_warning = f"⚠️ Notice: Multiple doctors requested completely off (F/X) on: {', '.join(overlaps)}" if overlaps else ""
+
     doc_unavailable_set = {d: set() for d in doctors}
     doc_contract_off_set = {d: set() for d in doctors}
 
@@ -251,6 +261,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
     
     for day_idx in range(num_days):
         current_date_str = roster_dates[day_idx].strftime("%Y-%m-%d")
+        
         req_shifts = 0
         if day_idx in sunday_equivalent_days:
             req_shifts = 3 
@@ -406,7 +417,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                     model.Add(sum(work[(d, day_idx + 1, s)] for s in day_active) == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_NIGHT')])
                     model.Add(work[(d, day_idx + 1, 'REP_DAY')] == 0).OnlyEnforceIf(work[(d, day_idx, 'REP_NIGHT')])
                 
-                # 🟢 BOSS LOGIC: THE MONTO PACKAGE (Pre-Night Double + Rep Night)
                 if day_idx < num_days - 1:
                     is_pre_night = work[(d, day_idx + 1, 'NIGHT')]
                     
@@ -423,7 +433,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                     model.AddBoolAnd([is_pre_night, pre_night_double, work[(d, day_idx, 'REP_NIGHT')]]).OnlyEnforceIf(ideal_pre_night)
                     
                     if pass_level == 0:
-                        # Hard lock the "Monto Package" in Gear 1 unless physically impossible
                         model.Add(ideal_pre_night == 1).OnlyEnforceIf(is_pre_night)
                     else:
                         objective_terms.append(2000 * ideal_pre_night)
@@ -437,7 +446,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 if day_idx + 1 < num_days: model.Add(sum(work[(d, day_idx + 1, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
                 if day_idx + 2 < num_days: model.Add(sum(work[(d, day_idx + 2, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
 
-            # 🟢 BOSS LOGIC: THE WEEKEND PENDULUM
             doctor_gws = []
             for week_start_idx in range(0, num_days, 7):
                 fri_idx, sat_idx, sun_idx = week_start_idx + 4, week_start_idx + 5, week_start_idx + 6
@@ -449,25 +457,22 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 doctor_gws.append(gw_var)
                 objective_terms.append(-5 * int(lifetime[d]['golden_weekends']) * gw_var)
                 
-                # Check consecutive weekends (Alternating Rule)
                 if week_start_idx >= 7:
                     prev_gw_var = doctor_gws[-2]
-                    
                     two_gws = model.NewBoolVar('')
                     model.AddBoolAnd([gw_var, prev_gw_var]).OnlyEnforceIf(two_gws)
-                    
                     two_works = model.NewBoolVar('')
                     model.AddBoolAnd([gw_var.Not(), prev_gw_var.Not()]).OnlyEnforceIf(two_works)
                     
                     if pass_level == 0:
-                        # In perfect gear, strictly forbid working two weekends in a row, or getting two off in a row.
                         model.Add(two_works == 0)
                         model.Add(two_gws == 0)
                     else:
                         objective_terms.append(-2000 * two_works)
                         objective_terms.append(-1000 * two_gws)
+                
+            if pass_level < 2: model.Add(sum(doctor_gws) >= 1)
 
-        # 🟢 PRE-VACATION NIGHT (Absolute Priority)
         for d in doctors:
             if d == 'GAUDENZI': continue
             for week_start_idx in range(0, num_days, 7):
@@ -482,7 +487,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
 
         weeks = [range(i, i + 7) for i in range(0, num_days, 7)]
 
-        # 🟢 MIN-MAX FAIRNESS FOR HOUR DISTRIBUTION
         diff_p_vars = {}
         diff_m_vars = {}
         
@@ -521,7 +525,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
         objective_terms.append(-2000 * max_dm)
         objective_terms.append(-1000 * max_dp)
 
-        # 🟢 WARD CONTINUITY
         if pass_level < 2:
             for d in doctors:
                 if d == 'GAUDENZI': continue
@@ -567,7 +570,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 model.AddBoolAnd([work[(d, day_idx, 'URG_AM')], work[(d, day_idx, 'URG_PM')]]).OnlyEnforceIf(urg_double)
                 objective_terms.append(10 * urg_double) 
 
-        # 🟢 LIFETIME EQUITY GRAVITY
         for d in doctors:
             if d == 'GAUDENZI': continue
             n_pts = int(lifetime[d]['nights'] * 10)
@@ -677,6 +679,7 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
     it_holidays = holidays.IT(years=[year-1, year, year+1])
     
     ledger = load_historical_counters()
+    lifetime = {d: get_lifetime_stats(ledger, d) for d in doctors}
 
     sunday_equivalent_days = []
     for day_idx, current_date in enumerate(roster_dates):
@@ -908,13 +911,13 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
 # ==========================================
 st.set_page_config(page_title="Cardiology Scheduler", page_icon="🩺", layout="wide")
 
-if "app_initialized_v6" not in st.session_state:
+if "app_initialized_v5" not in st.session_state:
     settings = load_persistent_settings()
     st.session_state.clinics_base_df = pd.DataFrame({"Clinic Name": settings["clinics"]})
     st.session_state.docs_base_df = pd.DataFrame(settings["docs_base"]) 
     st.session_state.cap_base_df = pd.DataFrame(settings["capabilities"]) 
     st.session_state.recurrence_rules = settings.get("recurrence", {})
-    st.session_state.app_initialized_v6 = True
+    st.session_state.app_initialized_v5 = True
 
 current_clinics = [str(c).strip().upper().replace(" ", "_") for c in st.session_state.clinics_base_df["Clinic Name"].dropna().unique() if str(c).strip()]
 
@@ -1081,7 +1084,7 @@ with tab2:
             column_config=col_config_manual, 
             hide_index=True, 
             use_container_width=True,
-            key=f"editor_{base_key}"
+            key=f"editor_manual_grid_week_{w_idx}"
         )
         st.session_state[last_edited_key] = edited_grid
         edited_manual_grids[w_idx] = edited_grid
