@@ -15,12 +15,15 @@ from github import Github
 # 0. GITHUB CLOUD SYNC ENGINE
 # ==========================================
 def push_to_github(file_path, commit_message):
+    """Silently pushes local json updates to GitHub if running on Streamlit Cloud."""
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
         try:
             g = Github(st.secrets["GITHUB_TOKEN"])
             repo = g.get_repo(st.secrets["GITHUB_REPO"])
+            
             with open(file_path, 'r') as file:
                 content = file.read()
+                
             try:
                 contents = repo.get_contents(file_path)
                 repo.update_file(contents.path, commit_message, content, contents.sha)
@@ -121,6 +124,16 @@ def get_roster_dates(year, month):
         curr += datetime.timedelta(days=1)
     return roster_dates
 
+def get_dates_for_weekdays(year, month, weekdays):
+    day_map = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 'Friday': 4, 'Saturday': 5, 'Sunday': 6}
+    target_days = [day_map[w] for w in weekdays]
+    num_days = calendar.monthrange(year, month)[1]
+    dates = []
+    for d in range(1, num_days + 1):
+        dt = datetime.date(year, month, d)
+        if dt.weekday() in target_days: dates.append(dt)
+    return dates
+
 def get_master_name(s):
     master_display = {'WARD_AM': 'REPARTO', 'URG_AM': 'URGENZE', 'OR_AM': 'SALA', 'WARD_PM': 'REPARTO', 'URG_PM': 'URGENZE', 'NIGHT': 'NOTTE', 'REP_NIGHT': 'REPERIBILE NOTTE', 'REP_DAY': 'REPERIBILE GIORNO MATTINA E POMERIGGIO'}
     if s in master_display: return master_display[s]
@@ -211,7 +224,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
     for (d, date_str, s) in manual_assignments:
         if date_str in date_to_idx and d in doctors: manual_keys.add((d, date_to_idx[date_str], s))
 
-    # OVERLAP WARNING SCANNER (Ferie & Full Leave)
+    # OVERLAP WARNING SCANNER
     fully_off_dates = []
     for (d, date_str), val in daily_absences.items():
         if val in ['F', 'X']:
@@ -829,12 +842,12 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
 # ==========================================
 st.set_page_config(page_title="Cardiology Scheduler", page_icon="🩺", layout="wide")
 
-if "app_initialized_v4" not in st.session_state:
+if "app_initialized_v5" not in st.session_state:
     settings = load_persistent_settings()
     st.session_state.clinics_base_df = pd.DataFrame({"Clinic Name": settings["clinics"]})
     st.session_state.docs_base_df = pd.DataFrame(settings["docs_base"]) 
     st.session_state.cap_base_df = pd.DataFrame(settings["capabilities"]) 
-    st.session_state.app_initialized_v4 = True
+    st.session_state.app_initialized_v5 = True
 
 current_clinics = [str(c).strip().upper().replace(" ", "_") for c in st.session_state.clinics_base_df["Clinic Name"].dropna().unique() if str(c).strip()]
 
@@ -861,7 +874,8 @@ with st.sidebar:
         st.session_state.docs_base_df,
         num_rows="dynamic",
         column_config=doc_col_config,
-        hide_index=True, use_container_width=True
+        hide_index=True, use_container_width=True,
+        key="docs_editor_persistent"
     )
     
     current_doctors = [str(d).strip().upper() for d in edited_docs_df["Doctor"].dropna().unique() if str(d).strip()]
@@ -870,21 +884,21 @@ with st.sidebar:
     st.header("👨‍⚕️ Doctor Capabilities")
     
     cap_cols = ["Doctor", "Ward Preferred", "OR Capable"] + current_clinics
-    current_cap_state = st.session_state.get('last_edited_caps', st.session_state.cap_base_df)
     
-    if list(current_cap_state.columns) != cap_cols or list(current_cap_state["Doctor"]) != current_doctors:
+    if list(st.session_state.cap_base_df.columns) != cap_cols or list(st.session_state.cap_base_df["Doctor"]) != current_doctors:
         new_df = pd.DataFrame({"Doctor": current_doctors})
         for c in cap_cols[1:]: new_df[c] = False
-        for idx, row in current_cap_state.iterrows():
+        
+        last_edited_caps = st.session_state.get('cap_editor_persistent', st.session_state.cap_base_df)
+        for idx, row in last_edited_caps.iterrows():
             d = row["Doctor"]
             if d in current_doctors:
                 for c in cap_cols[1:]:
-                    if c in current_cap_state.columns:
+                    if c in last_edited_caps.columns:
                         new_df.loc[new_df["Doctor"] == d, c] = row[c]
         st.session_state.cap_base_df = new_df
         
-    edited_cap_df = st.data_editor(st.session_state.cap_base_df, hide_index=True, use_container_width=True)
-    st.session_state.last_edited_caps = edited_cap_df
+    edited_cap_df = st.data_editor(st.session_state.cap_base_df, hide_index=True, use_container_width=True, key="cap_editor_persistent")
     
     save_persistent_settings(current_clinics, edited_docs_df, edited_cap_df)
     
@@ -892,7 +906,17 @@ with st.sidebar:
     st.header("🛠️ Troubleshooter")
     debug_toggle = st.checkbox("🚨 Enable Emergency Debug Mode", help="Ignores all equity rules to force a schedule.")
 
+month_key = f"{selected_year}-{selected_month:02d}"
 ui_roster_dates = get_roster_dates(selected_year, selected_month)
+num_days_in_month = calendar.monthrange(selected_year, selected_month)[1]
+month_dates = [datetime.date(selected_year, selected_month, d) for d in range(1, num_days_in_month + 1)]
+
+day_cols = []
+for d in month_dates:
+    day_str = str(d.day)
+    if d.weekday() == 5: day_str += " Sa"
+    elif d.weekday() == 6: day_str += " Su"
+    day_cols.append(day_str)
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Absences & Desiderate", "🔒 Forced Shifts", "🏥 OR & Clinics", "⚙️ Generate Draft", "🚀 Edit & Publish"])
 
@@ -906,42 +930,34 @@ with tab1:
     - **N**: No Notti (No night shifts)
     """)
     
-    month_key = f"{selected_year}-{selected_month:02d}"
-    abs_grid_key = f"absences_grid_{month_key}"
+    abs_grid_key = f"absences_base_{month_key}"
     
-    num_days_in_month = calendar.monthrange(selected_year, selected_month)[1]
-    month_dates = [datetime.date(selected_year, selected_month, d) for d in range(1, num_days_in_month + 1)]
-    
-    day_cols = []
     col_config = {"Doctor": st.column_config.TextColumn("Doctor Name", disabled=True, pinned=True)}
-    for d in month_dates:
-        day_str = str(d.day)
-        if d.weekday() == 5: day_str += " Sa"
-        elif d.weekday() == 6: day_str += " Su"
-        day_cols.append(day_str)
-        col_config[day_str] = st.column_config.SelectboxColumn(day_str, options=["", "F", "X", "P", "N"], width="small")
+    for d_str in day_cols:
+        col_config[d_str] = st.column_config.SelectboxColumn(d_str, options=["", "F", "X", "P", "N"], width="small")
         
     if abs_grid_key not in st.session_state:
         init_df = pd.DataFrame({"Doctor": current_doctors})
         for c in day_cols: init_df[c] = ""
         st.session_state[abs_grid_key] = init_df
         
-    curr_grid = st.session_state[abs_grid_key]
-    if list(curr_grid["Doctor"]) != current_doctors:
+    if list(st.session_state[abs_grid_key]["Doctor"]) != current_doctors:
         new_df = pd.DataFrame({"Doctor": current_doctors})
         for c in day_cols: new_df[c] = ""
-        for idx, row in curr_grid.iterrows():
+        
+        last_edited_abs = st.session_state.get(f"editor_{abs_grid_key}", st.session_state[abs_grid_key])
+        for idx, row in last_edited_abs.iterrows():
             if row["Doctor"] in current_doctors:
                 for c in day_cols:
-                    if c in curr_grid.columns: new_df.loc[new_df["Doctor"] == row["Doctor"], c] = row[c]
+                    if c in last_edited_abs.columns: new_df.loc[new_df["Doctor"] == row["Doctor"], c] = row[c]
         st.session_state[abs_grid_key] = new_df
         
     edited_absences_df = st.data_editor(
         st.session_state[abs_grid_key],
         column_config=col_config,
-        hide_index=True, use_container_width=True
+        hide_index=True, use_container_width=True,
+        key=f"editor_{abs_grid_key}"
     )
-    st.session_state[abs_grid_key] = edited_absences_df
 
 with tab2:
     st.subheader("Visual Override Grid")
@@ -949,37 +965,28 @@ with tab2:
     
     dynamic_shift_options = ['🌟 SUPER HOLIDAY', 'WARD_AM', 'URG_AM', 'OR_AM', 'WARD_PM', 'URG_PM', 'NIGHT', 'REP_DAY', 'REP_NIGHT'] + [f'OUT_{c}_AM' for c in current_clinics]
 
-    if st.session_state.get("current_ym_manual") != f"{selected_year}-{selected_month}":
-        st.session_state["current_ym_manual"] = f"{selected_year}-{selected_month}"
-        for k in list(st.session_state.keys()):
-            if k.startswith("manual_grid_base_") or k.startswith("last_edited_manual_grid_"):
-                del st.session_state[k]
-
     edited_manual_grids = {}
     for w_idx, week_start_idx in enumerate(range(0, len(ui_roster_dates), 7)):
         st.markdown(f"#### Forced Week {w_idx + 1}")
         week_dates = ui_roster_dates[week_start_idx : week_start_idx + 7]
         col_names = [d.strftime("%Y-%m-%d") for d in week_dates]
         
-        base_key = f"manual_grid_base_{w_idx}"
-        last_edited_key = f"last_edited_manual_grid_{w_idx}"
+        base_key = f"manual_grid_base_{month_key}_{w_idx}"
         
         if base_key not in st.session_state:
             init_dict = {"Shift": dynamic_shift_options}
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
             st.session_state[base_key] = pd.DataFrame(init_dict)
             
-        current_grid_state = st.session_state.get(last_edited_key, st.session_state[base_key])
-        
-        if list(current_grid_state["Shift"]) != dynamic_shift_options:
-            init_dict = {"Shift": dynamic_shift_options}
-            for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
-            new_df = pd.DataFrame(init_dict)
-            for idx, row in current_grid_state.iterrows():
+        if list(st.session_state[base_key]["Shift"]) != dynamic_shift_options:
+            new_df = pd.DataFrame({"Shift": dynamic_shift_options})
+            for c in col_names: new_df[c] = ""
+            last_edited_man = st.session_state.get(f"editor_{base_key}", st.session_state[base_key])
+            for idx, row in last_edited_man.iterrows():
                 s = row["Shift"]
                 if s in dynamic_shift_options:
                     for c in col_names:
-                        if c in current_grid_state.columns:
+                        if c in last_edited_man.columns:
                             new_df.loc[new_df["Shift"] == s, c] = row[c]
             st.session_state[base_key] = new_df
 
@@ -994,23 +1001,23 @@ with tab2:
             column_config=col_config_manual, 
             hide_index=True, 
             use_container_width=True,
-            key=f"editor_manual_grid_week_{w_idx}"
+            key=f"editor_{base_key}"
         )
-        st.session_state[last_edited_key] = edited_grid
         edited_manual_grids[w_idx] = edited_grid
         st.markdown("---")
 
 with tab3:
     st.subheader("🏥 Operating Room & Outpatient Clinics Setup")
     
-    act_grid_key = f"activities_grid_{month_key}"
+    act_grid_key = f"activities_base_{month_key}"
     
     edited_clinics_df = st.data_editor(
         st.session_state.clinics_base_df, 
         num_rows="dynamic",
         column_config={"Clinic Name": st.column_config.TextColumn("Define New Clinics Here", required=True)},
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
+        key="clinics_editor_persistent"
     )
     st.session_state.clinics_base_df = edited_clinics_df
     current_clinics = [str(c).strip().upper().replace(" ", "_") for c in edited_clinics_df["Clinic Name"].dropna().unique() if str(c).strip()]
@@ -1028,22 +1035,23 @@ with tab3:
         for c in day_cols: init_df[c] = False
         st.session_state[act_grid_key] = init_df
         
-    curr_act_grid = st.session_state[act_grid_key]
-    if list(curr_act_grid["Activity"]) != activities:
+    if list(st.session_state[act_grid_key]["Activity"]) != activities:
         new_df = pd.DataFrame({"Activity": activities})
         for c in day_cols: new_df[c] = False
-        for idx, row in curr_act_grid.iterrows():
+        
+        last_edited_act = st.session_state.get(f"editor_{act_grid_key}", st.session_state[act_grid_key])
+        for idx, row in last_edited_act.iterrows():
             if row["Activity"] in activities:
                 for c in day_cols:
-                    if c in curr_act_grid.columns: new_df.loc[new_df["Activity"] == row["Activity"], c] = row[c]
+                    if c in last_edited_act.columns: new_df.loc[new_df["Activity"] == row["Activity"], c] = row[c]
         st.session_state[act_grid_key] = new_df
         
     edited_act_df = st.data_editor(
         st.session_state[act_grid_key],
         column_config=act_col_config,
-        hide_index=True, use_container_width=True
+        hide_index=True, use_container_width=True,
+        key=f"editor_{act_grid_key}"
     )
-    st.session_state[act_grid_key] = edited_act_df
     
     or_days_formatted = []
     outpatient_setup = {c: {'days': [], 'capable': []} for c in current_clinics}
@@ -1123,8 +1131,6 @@ with tab4:
                     st.success("✅ Draft generated successfully! Go to **Tab 5 (🚀 Edit & Publish)** to review, modify, and publish the final Excel.")
                     if warning: st.warning(warning)
                     st.session_state.generated_draft_grids = draft_grids
-                    for k in list(st.session_state.keys()):
-                        if k.startswith("draft_editor_"): del st.session_state[k]
                 else:
                     st.error(f"❌ {warning}")
 
@@ -1151,7 +1157,7 @@ with tab5:
                 column_config=col_config, 
                 hide_index=True, 
                 use_container_width=True,
-                key=f"draft_editor_week_{w_idx}_{selected_year}_{selected_month}"
+                key=f"draft_editor_week_{w_idx}_{month_key}"
             )
             st.markdown("---")
 
