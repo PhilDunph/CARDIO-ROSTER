@@ -15,6 +15,7 @@ from github import Github
 # 0. GITHUB CLOUD SYNC ENGINE
 # ==========================================
 def push_to_github(file_path, commit_message):
+    """Silently pushes local json updates to GitHub if running on Streamlit Cloud."""
     if "GITHUB_TOKEN" in st.secrets and "GITHUB_REPO" in st.secrets:
         try:
             g = Github(st.secrets["GITHUB_TOKEN"])
@@ -100,13 +101,25 @@ def get_lifetime_stats(ledger, doc):
 # ==========================================
 # 2. CALENDAR & UTILS
 # ==========================================
+def get_weekly_target(doc, year, month):
+    """Calculates weekly target hours, lowering the baseline for specific residents."""
+    if doc.strip().upper() in ['CICCHIRILLO', 'CARDINALI']:
+        # Enforce the 32h cap until November 2026 (inclusive)
+        if year < 2026 or (year == 2026 and month <= 11):
+            return 32
+    return 34
+
 def get_roster_dates(year, month):
+    """Generates contiguous 7-day weeks. A week belongs ONLY to the month of its Monday."""
     cal = calendar.Calendar(firstweekday=0) 
     mondays = []
     for week in cal.monthdatescalendar(year, month):
+        # STRICT RULE: The week is owned by whichever month contains the Monday
         if week[0].month == month:
             if week[0] not in mondays: mondays.append(week[0])
+    
     if not mondays: return []
+    
     start_date = mondays[0]
     end_date = mondays[-1] + datetime.timedelta(days=6)
     roster_dates = []
@@ -291,9 +304,9 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
     gaudenzi_manual_active_hrs = sum(12 if s == 'NIGHT' else (6 if 'REP' not in s else 0) for (d, day, s) in manual_keys if d == 'GAUDENZI')
     total_available_hours -= gaudenzi_manual_active_hrs
     
-    total_required_hours_min = sum(max(0, int((doc_contract_days[d] / 7.0) * 34) - 12) for d in doctors if d != 'GAUDENZI')
+    total_required_hours_min = sum(max(0, int((doc_contract_days[d] / 7.0) * get_weekly_target(d, year, month)) - 12) for d in doctors if d != 'GAUDENZI')
     if total_required_hours_min > total_available_hours and not debug_mode and not ignore_34h:
-        return False, None, f"### 🚨 Contractual Hour Deficit\nThe 34h clinical minimum requires at least {total_required_hours_min}h total from active doctors, but department only has {total_available_hours}h scheduled.\n\n*Solution: Add clinics, or use the Resolution Options below to ignore the 34h rule.*"
+        return False, None, f"### 🚨 Contractual Hour Deficit\nThe clinical minimums require at least {total_required_hours_min}h total from active doctors, but department only has {total_available_hours}h scheduled.\n\n*Solution: Add clinics, or use the Resolution Options below to ignore the minimum hours rule.*"
 
     pass_levels = [3] if debug_mode else [0, 1, 2, 3]
     
@@ -445,7 +458,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                     if day_idx + 1 < num_days: model.Add(sum(work[(d, day_idx + 1, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
                     if day_idx + 2 < num_days: model.Add(sum(work[(d, day_idx + 2, s)] for s in shifts) == 0).OnlyEnforceIf(work[(d, day_idx, 'NIGHT')])
 
-            # 🟢 BOSS LOGIC: THE WEEKEND PENDULUM & ROBIN HOOD EQUITY
             doctor_gws = []
             for week_start_idx in range(0, num_days, 7):
                 fri_idx, sat_idx, sun_idx = week_start_idx + 4, week_start_idx + 5, week_start_idx + 6
@@ -491,13 +503,12 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
 
         weeks = [range(i, i + 7) for i in range(0, num_days, 7)]
 
-        # 🟢 MIN-MAX FAIRNESS FOR HOUR DISTRIBUTION
         diff_p_vars = {}
         diff_m_vars = {}
         
         for d in doctors:
             if d == 'GAUDENZI': continue
-            tgt_hours = int((doc_contract_days[d] / 7.0) * 34)
+            tgt_hours = int((doc_contract_days[d] / 7.0) * get_weekly_target(d, year, month))
             active_expr = sum(work[(d, day_idx, s)] * 6 for day_idx in range(num_days) for s in day_active) + \
                           sum(work[(d, day_idx, 'NIGHT')] * 12 for day_idx in range(num_days))
                           
@@ -530,7 +541,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
         objective_terms.append(-2000 * max_dm)
         objective_terms.append(-1000 * max_dp)
 
-        # 🟢 WARD CONTINUITY
         if pass_level < 2:
             for d in doctors:
                 if d == 'GAUDENZI': continue
@@ -576,7 +586,6 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                 model.AddBoolAnd([work[(d, day_idx, 'URG_AM')], work[(d, day_idx, 'URG_PM')]]).OnlyEnforceIf(urg_double)
                 objective_terms.append(10 * urg_double) 
 
-        # 🟢 HEAVY LIFETIME EQUITY GRAVITY
         for d in doctors:
             if d == 'GAUDENZI': continue
             n_pts = int(lifetime[d]['nights'] * 50)           
@@ -656,7 +665,7 @@ def generate_draft_schedule(year, month, conditional_or_days, manual_festivities
                                 if d_str not in outpatient_configs.get(c_name, {}).get('days', []): is_active = False
                             if is_active: assigned_doc = "[UNCOVERED]"
                         if assigned_doc: df.loc[df["Shift"] == s, d_str] = assigned_doc
-                draft_grids[w_idx] = df.copy()
+            draft_grids[w_idx] = df.copy()
             
             warning_msg = ""
             if pass_level == 1: warning_msg = "⚠️ GEAR 2: Hard consecutive ward/weekend limits were relaxed to find a schedule."
@@ -824,7 +833,7 @@ def process_and_export_schedule(edited_weekly_grids, year, month, conditional_or
             actual_hours = monthly_stats[doc]['total_hours']
             difference_display = "N/A"
         else:
-            doc_target = int((doc_contract_days[doc] / 7) * 34)
+            doc_target = int((doc_contract_days[doc] / 7) * get_weekly_target(doc, year, month))
             doc_target_display = doc_target
             actual_hours = monthly_stats[doc]['total_hours']
             difference = actual_hours - doc_target
@@ -940,7 +949,6 @@ with st.sidebar:
     month_key = f"{selected_year}-{selected_month:02d}"
     if st.session_state.active_month_key != month_key:
         st.session_state.active_month_key = month_key
-        # Wipe session grids to force rebuild for new month
         keys_to_clear = [k for k in st.session_state.keys() if k.startswith("src_") or k.startswith("editor_") or k.startswith("df_")]
         for k in keys_to_clear: del st.session_state[k]
     
@@ -1062,7 +1070,6 @@ with tab1:
             
         edited_df = st.data_editor(st.session_state[src_key], column_config=col_config, hide_index=True, use_container_width=True, key=f"editor_abs_w{w_idx}_{month_key}")
         
-        # Save edits back to memory dictionary
         for idx, row in edited_df.iterrows():
             doc = row["Doctor"]
             for i, d_str in enumerate(col_dates):
@@ -1086,17 +1093,17 @@ with tab2:
             day_str = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
             col_names.append(day_str)
         
-        src_key = f"src_manual_w{w_idx}_{month_key}"
+        base_key = f"manual_grid_base_{month_key}_{w_idx}"
         
-        if src_key not in st.session_state:
+        if base_key not in st.session_state:
             init_dict = {"Shift": dynamic_shift_options}
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
-            st.session_state[src_key] = pd.DataFrame(init_dict)
+            st.session_state[base_key] = pd.DataFrame(init_dict)
             
-        if list(st.session_state[src_key]["Shift"]) != dynamic_shift_options or list(st.session_state[src_key].columns)[1:] != col_names:
+        if list(st.session_state[base_key]["Shift"]) != dynamic_shift_options or list(st.session_state[base_key].columns)[1:] != col_names:
             init_dict = {"Shift": dynamic_shift_options}
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
-            st.session_state[src_key] = pd.DataFrame(init_dict)
+            st.session_state[base_key] = pd.DataFrame(init_dict)
 
         col_config_manual = {"Shift": st.column_config.TextColumn("Shift", disabled=True, pinned=True)}
         for i, d in enumerate(week_dates):
@@ -1104,7 +1111,7 @@ with tab2:
             col_config_manual[display_name] = st.column_config.SelectboxColumn(display_name, options=["", "YES"] + current_doctors)
             
         edited_grid = st.data_editor(
-            st.session_state[src_key], 
+            st.session_state[base_key], 
             column_config=col_config_manual, 
             hide_index=True, 
             use_container_width=True,
@@ -1229,7 +1236,7 @@ with tab4:
         with st.expander("🛠️ Resolution Center (Lesser Evils)", expanded=True):
             st.markdown("The department is mathematically understaffed based on your current settings. Select an override to continue:")
             allow_understaffing = st.checkbox("☑️ Allow Shift Understaffing (Leave some non-critical Clinic/Ward PM shifts empty)")
-            ignore_34h = st.checkbox("☑️ Ignore 34h Legal Minimum (Allow some doctors to run an hour deficit)")
+            ignore_34h = st.checkbox("☑️ Ignore Legal Minimum Hours (Allow some doctors to run an hour deficit)")
             st.session_state.resolution_toggles = {"allow_understaffing": allow_understaffing, "ignore_34h": ignore_34h}
     
     if st.button("🛠️ GENERATE DRAFT", use_container_width=True):
@@ -1285,7 +1292,7 @@ with tab4:
                     st.session_state.draft_month_key = month_key
                     if "generation_error" in st.session_state: del st.session_state["generation_error"]
                     for k in list(st.session_state.keys()):
-                        if k.startswith("src_draft_w"): del st.session_state[k]
+                        if k.startswith("df_draft_editor_week_"): del st.session_state[k]
                 else:
                     st.session_state.generation_error = warning
                     st.rerun()
@@ -1301,7 +1308,8 @@ with tab5:
         st.markdown("Make any last-minute human adjustments here. The Live Fairness Dashboard below will update instantly as you edit.")
         
         edited_final_drafts = {}
-        for w_idx, draft_df in st.session_state.generated_draft_grids.items():
+        for w_idx in range(0, len(ui_roster_dates) // 7):
+            if w_idx not in st.session_state.generated_draft_grids: continue
                 
             st.markdown(f"#### Draft Week {w_idx + 1}")
             week_dates = ui_roster_dates[w_idx*7 : (w_idx*7)+7]
@@ -1311,17 +1319,20 @@ with tab5:
                 display_name = f"{d.strftime('%b %d')} ({calendar.day_abbr[d.weekday()]})"
                 col_config[d_str] = st.column_config.SelectboxColumn(display_name, options=["", "[UNCOVERED]"] + current_doctors)
                 
-            src_key = f"src_draft_w{w_idx}_{month_key}"
-            if src_key not in st.session_state:
-                st.session_state[src_key] = draft_df.copy()
+            draft_key = f"draft_editor_week_{w_idx}_{month_key}"
+            df_draft_key = f"df_{draft_key}"
+            
+            if df_draft_key not in st.session_state:
+                st.session_state[df_draft_key] = st.session_state.generated_draft_grids[w_idx].copy()
                 
             edited_final_drafts[w_idx] = st.data_editor(
-                st.session_state[src_key], 
+                st.session_state[df_draft_key], 
                 column_config=col_config, 
                 hide_index=True, 
                 use_container_width=True,
-                key=f"editor_draft_w{w_idx}_{month_key}"
+                key=draft_key
             )
+            st.session_state[df_draft_key] = edited_final_drafts[w_idx]
             st.markdown("---")
 
         st.markdown("### 📊 Live Fairness Dashboard")
@@ -1381,7 +1392,7 @@ with tab5:
                 actual_hours = monthly_stats[doc]['total_hours']
                 difference_display = "N/A"
             else:
-                doc_target = int((doc_contract_days[doc] / 7) * 34)
+                doc_target = int((doc_contract_days[doc] / 7) * get_weekly_target(doc, selected_year, selected_month))
                 doc_target_display = doc_target
                 actual_hours = monthly_stats[doc]['total_hours']
                 difference = actual_hours - doc_target
