@@ -107,7 +107,6 @@ def get_lifetime_stats(ledger, doc):
 def get_weekly_target(doc, year, month):
     """Calculates weekly target hours, lowering the baseline for specific residents."""
     if doc.strip().upper() in ['CICCHIRILLO', 'CARDINALI']:
-        # Enforce the 32h cap until November 2026 (inclusive)
         if year < 2026 or (year == 2026 and month <= 11):
             return 32
     return 34
@@ -971,6 +970,7 @@ with st.sidebar:
         hide_index=True, use_container_width=True,
         key="docs_editor_persistent"
     )
+    st.session_state.docs_base_df = edited_docs_df
     
     current_doctors = [str(d).strip().upper() for d in edited_docs_df["Doctor"].dropna().unique() if str(d).strip()]
     
@@ -983,7 +983,8 @@ with st.sidebar:
         new_df = pd.DataFrame({"Doctor": current_doctors})
         for c in cap_cols[1:]: new_df[c] = False
         
-        last_edited_caps = st.session_state.get('cap_editor_persistent', st.session_state.cap_base_df)
+        # Read from the locked base DataFrame to map old data safely
+        last_edited_caps = st.session_state.cap_base_df
         for idx, row in last_edited_caps.iterrows():
             d = row["Doctor"]
             if d in current_doctors:
@@ -993,6 +994,8 @@ with st.sidebar:
         st.session_state.cap_base_df = new_df
         
     edited_cap_df = st.data_editor(st.session_state.cap_base_df, hide_index=True, use_container_width=True, key="cap_editor_persistent")
+    st.session_state.cap_base_df = edited_cap_df
+    
     save_persistent_settings(current_clinics, edited_docs_df, edited_cap_df, st.session_state.recurrence_rules)
     
     st.markdown("---")
@@ -1070,6 +1073,7 @@ with tab1:
             col_config[col_displays[i]] = st.column_config.SelectboxColumn(col_displays[i], options=["", "F", "X", "P", "N"], width="small")
             
         edited_df = st.data_editor(st.session_state[src_key], column_config=col_config, hide_index=True, use_container_width=True, key=f"editor_abs_w{w_idx}_{month_key}")
+        st.session_state[src_key] = edited_df
         
         # Save edits back to memory dictionary
         for idx, row in edited_df.iterrows():
@@ -1105,7 +1109,16 @@ with tab2:
         if list(st.session_state[src_key]["Shift"]) != dynamic_shift_options or list(st.session_state[src_key].columns)[1:] != col_names:
             init_dict = {"Shift": dynamic_shift_options}
             for c in col_names: init_dict[c] = [""] * len(dynamic_shift_options)
-            st.session_state[src_key] = pd.DataFrame(init_dict)
+            new_df = pd.DataFrame(init_dict)
+            
+            last_edited_man = st.session_state[src_key]
+            for idx, row in last_edited_man.iterrows():
+                s = row["Shift"]
+                if s in dynamic_shift_options:
+                    for c in col_names:
+                        if c in last_edited_man.columns:
+                            new_df.loc[new_df["Shift"] == s, c] = row[c]
+            st.session_state[src_key] = new_df
 
         col_config_manual = {"Shift": st.column_config.TextColumn("Shift", disabled=True, pinned=True)}
         for i, d in enumerate(week_dates):
@@ -1119,6 +1132,7 @@ with tab2:
             use_container_width=True,
             key=f"editor_manual_w{w_idx}_{month_key}"
         )
+        st.session_state[src_key] = edited_grid
         edited_manual_grids[w_idx] = edited_grid
         st.markdown("---")
 
@@ -1200,6 +1214,22 @@ with tab3:
     if list(st.session_state[src_key]["Activity"]) != activities or list(st.session_state[src_key].columns)[1:] != day_cols_act:
         new_df = pd.DataFrame({"Activity": activities})
         for c in day_cols_act: new_df[c] = False
+        
+        last_edited_act = st.session_state[src_key]
+        for act in activities:
+            if act in list(last_edited_act["Activity"]):
+                for c in day_cols_act:
+                    if c in last_edited_act.columns: 
+                        new_df.loc[new_df["Activity"] == act, c] = last_edited_act.loc[last_edited_act["Activity"] == act, c].values[0]
+            else:
+                rules = st.session_state.recurrence_rules.get(act, {})
+                valid_dates = calculate_recurring_days(selected_year, selected_month, rules.get("weekdays", []), rules.get("weeks", ["All"]))
+                for vd in valid_dates:
+                    d_obj = datetime.datetime.strptime(vd, "%Y-%m-%d").date()
+                    if d_obj in ui_roster_dates:
+                        col_idx = ui_roster_dates.index(d_obj)
+                        new_df.loc[new_df["Activity"] == act, day_cols_act[col_idx]] = True
+                    
         st.session_state[src_key] = new_df
         
     act_col_config = {"Activity": st.column_config.TextColumn("Activity", disabled=True, pinned=True)}
@@ -1212,6 +1242,7 @@ with tab3:
         hide_index=True, use_container_width=True,
         key=f"editor_activities_{month_key}"
     )
+    st.session_state[src_key] = edited_act_df
     
     or_days_formatted = []
     outpatient_setup = {c: {'days': [], 'capable': []} for c in current_clinics}
@@ -1238,7 +1269,7 @@ with tab4:
         with st.expander("🛠️ Resolution Center (Lesser Evils)", expanded=True):
             st.markdown("The department is mathematically understaffed based on your current settings. Select an override to continue:")
             allow_understaffing = st.checkbox("☑️ Allow Shift Understaffing (Leave some non-critical Clinic/Ward PM shifts empty)")
-            ignore_34h = st.checkbox("☑️ Ignore 34h Legal Minimum (Allow some doctors to run an hour deficit)")
+            ignore_34h = st.checkbox("☑️ Ignore Minimum Target Hours (Allow some doctors to run an hour deficit)")
             st.session_state.resolution_toggles = {"allow_understaffing": allow_understaffing, "ignore_34h": ignore_34h}
     
     if st.button("🛠️ GENERATE DRAFT", use_container_width=True):
